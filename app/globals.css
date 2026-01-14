@@ -20,10 +20,10 @@ body {
 }
 
 h1 {
-  color: #333;
+  color: #0000CD;
   margin-bottom: 30px;
   font-size: 28px;
-  border-bottom: 3px solid #228B22;
+  border-bottom: 3px solid #0000CD;
   padding-bottom: 10px;
 }
 
@@ -165,7 +165,7 @@ button:active {
 }
 
 .state-info strong {
-  color: #d32f2f;
+  color: #228B22;
   display: block;
   margin-bottom: 5px;
 }

@@ -27,17 +27,15 @@ export default function Home() {
 
   const [currentImage, setCurrentImage] = useState('');
 
-  const variables = ['Temperature', 'Pressure', 'Humidity', 'Wind Speed'];
-  const levels = ['Surface', '850mb', '700mb', '500mb', '200mb'];
-  const algorithms = ['Algorithm A', 'Algorithm B', 'Algorithm C'];
-  const latitudes = ['0°', '10°N', '20°N', '30°N'];
-  const waveTCs = ['Wave 1', 'Wave 2', 'TC 1', 'TC 2'];
+  const variables = ['Outgoing Longwave Radiation', 'Zonal Wind', 'Meridional Wind', 'Velocity Potential', 'Stean Function', 'Zonal Shear', 'Shear Magnitude', 'Percipitable Water'];
+  const levels = ['850-hPa', '250-hPa'];
+  const algorithms = ['Original', 'TCs Removed', 'CFS Forecast', 'CFS with SSTs'];
+  const latitudes = ['North: 5N - 15N', 'North 2: 10N - 20N', 'Eqtr: 5S - 5N', 'South: 15S - 5S', 'Wide: 15S - 15N'];
+  const waveTCs = ['All', 'Tropical Cyclones', 'Sum Of Modes', 'Low', 'MJO', 'ER', 'Kelvin', 'MRG/TD'];
   const regions = ['Atlantic', 'Pacific', 'Indian Ocean', 'Caribbean'];
-  const days = ['Today', '1 Day', '3 Days', '5 Days', '7 Days'];
+  const days = ['1 Day', '2 Days', '3 Days', '5 Days', '7 Days', '10 Days'];
 
   const generateImageUrl = () => {
-    // Example: Build URL based on selected options
-    // You would replace this with your actual image URL logic
     const params = new URLSearchParams();
     
     if (hovmollers.variable) params.append('hov_var', hovmollers.variable);
@@ -100,7 +98,7 @@ export default function Home() {
         <div className="controls-section">
           {/* Hovmöllers Section */}
           <section className="control-group">
-            <h2>+ Figures</h2>
+            <h2>Figures</h2>
             <h3>Hovmöllers:</h3>
             <form onSubmit={handleHovmollersSubmit}>
               <div className="dropdown-row">
