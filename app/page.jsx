@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
+import { renderPrecipitationWebGL } from './PrecipitationLayerWebGL';
 
 const Map = dynamic(() => import('./Map'), { ssr: false });
 
@@ -81,7 +82,68 @@ const getCachedTile = (x, y, zoom) => {
   const tileKey = `${zoom}/${x}/${y}`;
   return tileCache[tileKey] || null;
 };
+// Parse binary precipitation data (much faster than JSON)
+const parseBinaryPrecipData = (buffer) => {
+  const view = new DataView(buffer);
+  let offset = 0;
+  
+  // Read header (4 int32 + 9 float32 = 52 bytes)
+  const latCount = view.getInt32(offset, true); offset += 4;
+  const lonCount = view.getInt32(offset, true); offset += 4;
+  const timeIndex = view.getInt32(offset, true); offset += 4;
+  const totalTimes = view.getInt32(offset, true); offset += 4;
+  
+  const minLat = view.getFloat32(offset, true); offset += 4;
+  const maxLat = view.getFloat32(offset, true); offset += 4;
+  const minLon = view.getFloat32(offset, true); offset += 4;
+  const maxLon = view.getFloat32(offset, true); offset += 4;
+  
+  const statsMin = view.getFloat32(offset, true); offset += 4;
+  const statsMax = view.getFloat32(offset, true); offset += 4;
+  const statsMean = view.getFloat32(offset, true); offset += 4;
+  const actualMin = view.getFloat32(offset, true); offset += 4;
+  const actualMax = view.getFloat32(offset, true); offset += 4;
+  
+  // Read lat array
+  const lat = new Float32Array(buffer, offset, latCount);
+  offset += latCount * 4;
+  
+  // Read lon array
+  const lon = new Float32Array(buffer, offset, lonCount);
+  offset += lonCount * 4;
+  
+  // Read values as 2D array (convert from flat Float32Array)
+  const flatValues = new Float32Array(buffer, offset, latCount * lonCount);
+  const values = [];
+  for (let i = 0; i < latCount; i++) {
+    values.push(Array.from(flatValues.slice(i * lonCount, (i + 1) * lonCount)));
+  }
+  
+  return {
+    lat: Array.from(lat),
+    lon: Array.from(lon),
+    values,
+    bounds: { minLat, maxLat, minLon, maxLon },
+    stats: {
+      min: statsMin,
+      max: statsMax,
+      mean: statsMean,
+      actualMin,
+      actualMax
+    },
+    timeIndex,
+    totalTimes
+  };
+};
 
+// Fetch binary data (3-4x faster than JSON)
+const fetchBinaryPrecipData = async (periodParam, timeParam) => {
+  const response = await fetch(
+    `http://localhost:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=1`
+  );
+  const buffer = await response.arrayBuffer();
+  return parseBinaryPrecipData(buffer);
+};
 export default function Home() {
   // ... your existing state ...
   
@@ -95,6 +157,19 @@ export default function Home() {
   const [pngImage, setPngImage] = useState(null);
   const [tilesLoaded, setTilesLoaded] = useState(false);
   const [tileLoadProgress, setTileLoadProgress] = useState({ loaded: 0, total: 0 });
+  
+  // Animation state
+  const [animationFrom, setAnimationFrom] = useState(0);
+  const [animationTo, setAnimationTo] = useState(0);
+  const [animationFps, setAnimationFps] = useState(2);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const animationRef = useRef(null);
+  const isPlayingRef = useRef(false);
+  
+  // Data cache for animation
+  const [dataCache, setDataCache] = useState({});
+  const [isCachingData, setIsCachingData] = useState(false);
+  const [cacheProgress, setCacheProgress] = useState({ loaded: 0, total: 0 });
 
   // Pre-load tiles on mount
   useEffect(() => {
@@ -127,6 +202,9 @@ export default function Home() {
       .then(data => {
         setAvailableTimes(data.times || []);
         setTimeIndex(0); // Reset time index when period changes
+        // Set animation range to full period
+        setAnimationFrom(0);
+        setAnimationTo((data.times || []).length - 1);
       })
       .catch(err => console.error('Error fetching times:', err));
   }, [period]);
@@ -228,15 +306,12 @@ export default function Home() {
       ctx.fillText(`${ln}°`, p1.x, padding.top + mapHeight + 15);
     }
 
-    // Create high-resolution interpolated canvas
+    // Create high-resolution canvas for WebGL rendering
     const dataCanvas = document.createElement('canvas');
-    const interpFactor = 4; // Interpolation factor for smoother appearance
-    dataCanvas.width = lon.length * interpFactor;
-    dataCanvas.height = lat.length * interpFactor;
-    const dataCtx = dataCanvas.getContext('2d');
+    dataCanvas.width = lon.length * 4;
+    dataCanvas.height = lat.length * 4;
     
     // Calculate the actual bounds from the data coordinates
-    // This ensures the overlay aligns with the actual data points
     const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
     const dataLatMax = Math.max(lat[0], lat[lat.length - 1]);
     const dataLonMin = Math.min(lon[0], lon[lon.length - 1]);
@@ -254,45 +329,10 @@ export default function Home() {
       maxLon: dataLonMax + lonStep / 2
     };
     
-    // First, draw original data to small canvas
-    const smallCanvas = document.createElement('canvas');
-    smallCanvas.width = lon.length;
-    smallCanvas.height = lat.length;
-    const smallCtx = smallCanvas.getContext('2d');
-    const imageData = smallCtx.createImageData(lon.length, lat.length);
-    const latAscending = lat[0] < lat[lat.length - 1];
+    // Render using WebGL (much faster!)
+    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 0.9);
     
-    for (let i = 0; i < lat.length; i++) {
-      for (let j = 0; j < lon.length; j++) {
-        const value = values[i][j];
-        const canvasY = latAscending ? (lat.length - 1 - i) : i;
-        const pixelIndex = (canvasY * lon.length + j) * 4;
-        
-        if (value !== -999 && value >= 0) {
-          const normalized = Math.max(0, Math.min(1, (value - stats.min) / (stats.max - stats.min + 0.001)));
-          const colors = [[255,255,204],[199,233,180],[127,205,187],[65,182,196],[29,145,192],[34,94,168],[12,44,132]];
-          const index = Math.min(Math.floor(normalized * (colors.length - 1)), colors.length - 2);
-          const localNorm = (normalized * (colors.length - 1)) - index;
-          const c1 = colors[index], c2 = colors[index + 1];
-          
-          imageData.data[pixelIndex] = Math.round(c1[0] + (c2[0] - c1[0]) * localNorm);
-          imageData.data[pixelIndex + 1] = Math.round(c1[1] + (c2[1] - c1[1]) * localNorm);
-          imageData.data[pixelIndex + 2] = Math.round(c1[2] + (c2[2] - c1[2]) * localNorm);
-          imageData.data[pixelIndex + 3] = 255;
-        } else {
-          imageData.data[pixelIndex + 3] = 0;
-        }
-      }
-    }
-    
-    smallCtx.putImageData(imageData, 0, 0);
-    
-    // Interpolate to higher resolution
-    dataCtx.imageSmoothingEnabled = true;
-    dataCtx.imageSmoothingQuality = 'high';
-    dataCtx.drawImage(smallCanvas, 0, 0, dataCanvas.width, dataCanvas.height);
-    
-    // Draw smoothed data onto main canvas using pixel-centered bounds
+    // Draw WebGL-rendered data onto main canvas using pixel-centered bounds
     const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);
     const mapBottomRight = geoToCanvas(dataBounds.minLat, dataBounds.maxLon);
     
@@ -357,19 +397,19 @@ export default function Home() {
     ctx.font = 'bold 28px Arial';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#000';
-    ctx.fillText('Daily Precipitation - Indonesia Region', width / 2, 60);
 
     return canvas.toDataURL('image/png');
   };
 
-  // Fetch precipitation data
+  // Fetch precipitation data (using binary for speed)
   const fetchPrecipData = async () => {
     setLoading(true);
     try {
-      const response = await fetch(
-        `http://localhost:5000/api/precipitation?period=${period}&time=${timeIndex}&subsample=1`
-      );
-      const data = await response.json();
+      const startTime = performance.now();
+      const data = await fetchBinaryPrecipData(period, timeIndex);
+      const elapsed = performance.now() - startTime;
+      console.log(`Binary fetch took ${elapsed.toFixed(0)}ms`);
+      
       setPrecipData(data);
       if (viewMode === 'png') {
         const png = await generatePNG(data);
@@ -390,17 +430,124 @@ export default function Home() {
     }
   }, [viewMode]);
 
-  // Auto-load data when period, timeIndex, or viewMode changes
+  // Auto-load data when period, timeIndex, or viewMode changes (only when not playing animation)
   useEffect(() => {
-    if (period && availableTimes.length > 0) {
+    if (period && availableTimes.length > 0 && !isPlaying) {
       // Add small delay to allow switch animation to complete
       const timer = setTimeout(() => {
         fetchPrecipData();
-      }, 2000);
+      }, 100);
       
       return () => clearTimeout(timer);
     }
   }, [period, timeIndex, viewMode]);
+
+  // Pre-cache data for animation range (using binary for speed)
+  const cacheAnimationData = async () => {
+    const totalFrames = animationTo - animationFrom + 1;
+    setCacheProgress({ loaded: 0, total: totalFrames });
+    setIsCachingData(true);
+    
+    const newCache = {};
+    const startTime = performance.now();
+    
+    for (let i = animationFrom; i <= animationTo; i++) {
+      const cacheKey = `${period}_${i}`;
+      
+      // Skip if already cached
+      if (dataCache[cacheKey]) {
+        newCache[cacheKey] = dataCache[cacheKey];
+        setCacheProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));
+        continue;
+      }
+      
+      try {
+        const data = await fetchBinaryPrecipData(period, i);
+        newCache[cacheKey] = data;
+      } catch (error) {
+        console.error(`Error caching frame ${i}:`, error);
+      }
+      
+      setCacheProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));
+    }
+    
+    const elapsed = performance.now() - startTime;
+    console.log(`Cached ${totalFrames} frames in ${elapsed.toFixed(0)}ms (${(elapsed/totalFrames).toFixed(0)}ms per frame)`);
+    
+    setDataCache(prev => ({ ...prev, ...newCache }));
+    setIsCachingData(false);
+    return newCache;
+  };
+
+  // Animation playback logic - fetches frames on-demand for instant start
+  const playAnimation = async () => {
+    if (isPlaying) return;
+    
+    setIsPlaying(true);
+    isPlayingRef.current = true;
+    setTimeIndex(animationFrom);
+    
+    let currentFrame = animationFrom;
+    const localCache = { ...dataCache }; // Local copy to avoid state sync issues
+    
+    const animate = async () => {
+      if (!isPlayingRef.current) return;
+      
+      const cacheKey = `${period}_${currentFrame}`;
+      let frameData = localCache[cacheKey];
+      
+      // Fetch on-demand if not cached
+      if (!frameData) {
+        try {
+          frameData = await fetchBinaryPrecipData(period, currentFrame);
+          localCache[cacheKey] = frameData;
+          // Update global cache in background
+          setDataCache(prev => ({ ...prev, [cacheKey]: frameData }));
+        } catch (error) {
+          console.error(`Error fetching frame ${currentFrame}:`, error);
+        }
+      }
+      
+      if (frameData && isPlayingRef.current) {
+        setPrecipData(frameData);
+        if (viewMode === 'png') {
+          const png = await generatePNG(frameData);
+          setPngImage(png);
+        }
+      }
+      
+      currentFrame++;
+      if (currentFrame > animationTo) {
+        currentFrame = animationFrom; // Loop
+      }
+      setTimeIndex(currentFrame);
+      
+      if (isPlayingRef.current) {
+        animationRef.current = setTimeout(animate, 1000 / animationFps);
+      }
+    };
+    
+    animate();
+  };
+
+  const stopAnimation = () => {
+    isPlayingRef.current = false;
+    setIsPlaying(false);
+    if (animationRef.current) {
+      clearTimeout(animationRef.current);
+      animationRef.current = null;
+    }
+  };
+
+  // Cleanup animation on unmount
+  useEffect(() => {
+    return () => {
+      isPlayingRef.current = false;
+      if (animationRef.current) {
+        clearTimeout(animationRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="app">
@@ -528,6 +675,164 @@ export default function Home() {
                 ) : (
                   <p>Load data to view PNG</p>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Animation Controls */}
+          <div className="animation-controls" style={{ 
+            marginTop: '20px', 
+            padding: '15px', 
+            backgroundColor: '#f5f5f5', 
+            borderRadius: '10px',
+            border: '1px solid #ddd'
+          }}>
+            <h4 style={{ marginBottom: '15px', color: '#333' }}>Animation Controls</h4>
+            
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'center' }}>
+              {/* From Time */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#666' }}>From:</label>
+                <select
+                  value={animationFrom}
+                  onChange={(e) => setAnimationFrom(parseInt(e.target.value))}
+                  disabled={isPlaying}
+                  style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '150px' }}
+                >
+                  {availableTimes.map((time, idx) => (
+                    <option key={idx} value={idx}>{time}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* To Time */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#666' }}>To:</label>
+                <select
+                  value={animationTo}
+                  onChange={(e) => setAnimationTo(parseInt(e.target.value))}
+                  disabled={isPlaying}
+                  style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '150px' }}
+                >
+                  {availableTimes.map((time, idx) => (
+                    <option key={idx} value={idx}>{time}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* FPS */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#666' }}>FPS:</label>
+                <select
+                  value={animationFps}
+                  onChange={(e) => setAnimationFps(parseInt(e.target.value))}
+                  disabled={isPlaying}
+                  style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '80px' }}
+                >
+                  <option value={1}>1</option>
+                  <option value={2}>2</option>
+                  <option value={3}>3</option>
+                  <option value={4}>4</option>
+                  <option value={5}>5</option>
+                </select>
+              </div>
+
+              {/* Play/Stop Buttons */}
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
+                <button
+                  onClick={playAnimation}
+                  disabled={isPlaying || availableTimes.length === 0}
+                  style={{
+                    padding: '10px 25px',
+                    backgroundColor: isPlaying ? '#ccc' : '#28a745',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '5px',
+                    cursor: isPlaying ? 'not-allowed' : 'pointer',
+                    fontWeight: 'bold',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px'
+                  }}
+                >
+                  ▶ Play
+                </button>
+                <button
+                  onClick={stopAnimation}
+                  disabled={!isPlaying}
+                  style={{
+                    padding: '10px 25px',
+                    backgroundColor: !isPlaying ? '#ccc' : '#dc3545',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '5px',
+                    cursor: !isPlaying ? 'not-allowed' : 'pointer',
+                    fontWeight: 'bold',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '5px'
+                  }}
+                >
+                  ⏹ Stop
+                </button>
+              </div>
+            </div>
+
+            {/* Caching progress */}
+            {isCachingData && (
+              <div style={{ marginTop: '15px' }}>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  fontSize: '12px', 
+                  color: '#666',
+                  marginBottom: '5px'
+                }}>
+                  <span>Caching data for smooth playback...</span>
+                  <span>{cacheProgress.loaded} / {cacheProgress.total}</span>
+                </div>
+                <div style={{ 
+                  height: '6px', 
+                  backgroundColor: '#ddd', 
+                  borderRadius: '3px', 
+                  overflow: 'hidden' 
+                }}>
+                  <div style={{ 
+                    height: '100%', 
+                    width: `${(cacheProgress.loaded / cacheProgress.total) * 100}%`,
+                    backgroundColor: '#ffc107',
+                    transition: 'width 0.1s ease'
+                  }}></div>
+                </div>
+              </div>
+            )}
+
+            {/* Playback progress indicator */}
+            {isPlaying && (
+              <div style={{ marginTop: '15px' }}>
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  fontSize: '12px', 
+                  color: '#666',
+                  marginBottom: '5px'
+                }}>
+                  <span>Frame: {timeIndex - animationFrom + 1} / {animationTo - animationFrom + 1}</span>
+                  <span>{availableTimes[timeIndex] || ''}</span>
+                </div>
+                <div style={{ 
+                  height: '6px', 
+                  backgroundColor: '#ddd', 
+                  borderRadius: '3px', 
+                  overflow: 'hidden' 
+                }}>
+                  <div style={{ 
+                    height: '100%', 
+                    width: `${((timeIndex - animationFrom) / (animationTo - animationFrom)) * 100}%`,
+                    backgroundColor: '#0000CD',
+                    transition: 'width 0.1s ease'
+                  }}></div>
+                </div>
               </div>
             )}
           </div>

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
-import PrecipitationLayer from './PrecipitationLayer';
+import PrecipitationLayerWebGL from './PrecipitationLayerWebGL';
 
 // Color legend component
 function ColorLegend({ stats }) {
@@ -107,7 +107,7 @@ export default function Map({ precipData }) {
       />
       {mapReady && precipData && (
         <>
-          <PrecipitationLayer 
+          <PrecipitationLayerWebGL 
             map={mapInstanceRef.current} 
             data={precipData}
             opacity={0.7}

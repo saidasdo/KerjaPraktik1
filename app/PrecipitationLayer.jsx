@@ -39,7 +39,7 @@ export default function PrecipitationLayer({ map, data, opacity = 0.7 }) {
 
     // Upscale factor for smooth interpolation (like Windy.com)
     // Higher = smoother but more processing time
-    const upscaleFactor = 16;
+    const upscaleFactor = 8;
     const width = lon.length * upscaleFactor;
     const height = lat.length * upscaleFactor;
     
