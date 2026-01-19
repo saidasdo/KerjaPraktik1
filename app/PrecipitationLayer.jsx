@@ -134,6 +134,25 @@ export default function PrecipitationLayer({ map, data, opacity = 0.7 }) {
 
     // Check if lat is ascending (south to north) or descending (north to south)
     const latAscending = lat[0] < lat[lat.length - 1];
+    
+    // Calculate the actual bounds from the data coordinates (not API bounds)
+    // This ensures the overlay aligns with the actual data points
+    const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
+    const dataLatMax = Math.max(lat[0], lat[lat.length - 1]);
+    const dataLonMin = Math.min(lon[0], lon[lon.length - 1]);
+    const dataLonMax = Math.max(lon[0], lon[lon.length - 1]);
+    
+    // Calculate pixel size in geographic units
+    const latStep = (dataLatMax - dataLatMin) / (lat.length - 1);
+    const lonStep = (dataLonMax - dataLonMin) / (lon.length - 1);
+    
+    // Extend bounds by half a pixel to properly center the data
+    const overlayBounds = {
+      minLat: dataLatMin - latStep / 2,
+      maxLat: dataLatMax + latStep / 2,
+      minLon: dataLonMin - lonStep / 2,
+      maxLon: dataLonMax + lonStep / 2
+    };
 
     // Render with bilinear interpolation and smooth edges
     for (let py = 0; py < height; py++) {
@@ -172,13 +191,14 @@ export default function PrecipitationLayer({ map, data, opacity = 0.7 }) {
     
     ctx.putImageData(imageData, 0, 0);
 
-    // Use actual bounds from the API (full dataset bounds, not subsampled)
+    // Use calculated bounds that properly align with data pixel centers
     const bounds = L.latLngBounds(
-      [dataBounds.minLat, dataBounds.minLon],  // Southwest corner
-      [dataBounds.maxLat, dataBounds.maxLon]   // Northeast corner
+      [overlayBounds.minLat, overlayBounds.minLon],  // Southwest corner
+      [overlayBounds.maxLat, overlayBounds.maxLon]   // Northeast corner
     );
 
-    console.log('Overlay bounds:', bounds.toBBoxString());
+    console.log('Data bounds:', dataBounds);
+    console.log('Overlay bounds (pixel-centered):', overlayBounds);
 
     // Create image overlay
     const imageUrl = canvas.toDataURL('image/png');

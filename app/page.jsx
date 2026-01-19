@@ -1,9 +1,86 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
 
 const Map = dynamic(() => import('./Map'), { ssr: false });
+
+// Tile cache - using plain object for better compatibility with Next.js hot reload
+const tileCache = {};
+
+// Default bounds for Indonesia region
+const DEFAULT_BOUNDS = {
+  minLat: -11,
+  maxLat: 6,
+  minLon: 95,
+  maxLon: 141
+};
+
+// Pre-calculate tile coordinates for caching
+const getTileCoordinates = (bounds, zoom) => {
+  const latToTile = (lat, z) => {
+    return Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, z));
+  };
+  const lonToTile = (lon, z) => {
+    return Math.floor((lon + 180) / 360 * Math.pow(2, z));
+  };
+  
+  return {
+    minTileX: lonToTile(bounds.minLon, zoom),
+    maxTileX: lonToTile(bounds.maxLon, zoom),
+    minTileY: latToTile(bounds.maxLat, zoom),
+    maxTileY: latToTile(bounds.minLat, zoom)
+  };
+};
+
+// Function to pre-load and cache tiles
+const preloadTiles = async (bounds, zoom, onProgress) => {
+  const { minTileX, maxTileX, minTileY, maxTileY } = getTileCoordinates(bounds, zoom);
+  const totalTiles = (maxTileX - minTileX + 1) * (maxTileY - minTileY + 1);
+  let loadedCount = 0;
+  
+  const tilePromises = [];
+  for (let x = minTileX; x <= maxTileX; x++) {
+    for (let y = minTileY; y <= maxTileY; y++) {
+      const tileKey = `${zoom}/${x}/${y}`;
+      
+      // Skip if already cached
+      if (tileCache[tileKey]) {
+        loadedCount++;
+        if (onProgress) onProgress(loadedCount, totalTiles);
+        continue;
+      }
+      
+      const tileUrl = `https://tiles.stadiamaps.com/tiles/stamen_toner_lite/${zoom}/${x}/${y}.png`;
+      const promise = new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          tileCache[tileKey] = img;
+          loadedCount++;
+          if (onProgress) onProgress(loadedCount, totalTiles);
+          resolve({ img, x, y });
+        };
+        img.onerror = () => {
+          loadedCount++;
+          if (onProgress) onProgress(loadedCount, totalTiles);
+          resolve(null);
+        };
+        img.src = tileUrl;
+      });
+      tilePromises.push(promise);
+    }
+  }
+  
+  await Promise.all(tilePromises);
+  return true;
+};
+
+// Get cached tile
+const getCachedTile = (x, y, zoom) => {
+  const tileKey = `${zoom}/${x}/${y}`;
+  return tileCache[tileKey] || null;
+};
 
 export default function Home() {
   // ... your existing state ...
@@ -16,6 +93,22 @@ export default function Home() {
   const [availablePeriods, setAvailablePeriods] = useState([]);
   const [viewMode, setViewMode] = useState('leaflet'); // 'leaflet' or 'png'
   const [pngImage, setPngImage] = useState(null);
+  const [tilesLoaded, setTilesLoaded] = useState(false);
+  const [tileLoadProgress, setTileLoadProgress] = useState({ loaded: 0, total: 0 });
+
+  // Pre-load tiles on mount
+  useEffect(() => {
+    const loadTiles = async () => {
+      console.log('Pre-loading map tiles...');
+      await preloadTiles(DEFAULT_BOUNDS, 6, (loaded, total) => {
+        setTileLoadProgress({ loaded, total });
+      });
+      setTilesLoaded(true);
+      console.log('Map tiles cached successfully!');
+    };
+    
+    loadTiles();
+  }, []);
 
   // Fetch available periods on mount
   useEffect(() => {
@@ -74,59 +167,30 @@ export default function Home() {
       return { x, y };
     };
 
-    // Draw simple coastlines using Stamen Toner Lite (black and white, no labels)
+    // Draw tiles from cache (using Stamen Toner Lite - just coastlines, no labels)
     const zoom = 6;
+    const { minTileX, maxTileX, minTileY, maxTileY } = getTileCoordinates(bounds, zoom);
     
-    // Calculate tile range
-    const latToTile = (lat, zoom) => {
-      return Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom));
-    };
-    const lonToTile = (lon, zoom) => {
-      return Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
-    };
-    
-    const minTileX = lonToTile(bounds.minLon, zoom);
-    const maxTileX = lonToTile(bounds.maxLon, zoom);
-    const minTileY = latToTile(bounds.maxLat, zoom);
-    const maxTileY = latToTile(bounds.minLat, zoom);
-    
-    // Load and draw tiles (using Stamen Toner Lite - just coastlines, no labels)
-    const tilePromises = [];
+    // Draw tiles from cache (instant - no network requests!)
     for (let x = minTileX; x <= maxTileX; x++) {
       for (let y = minTileY; y <= maxTileY; y++) {
-        // Using Stamen Toner Lite for simple black and white coastlines without labels
-        const tileUrl = `https://tiles.stadiamaps.com/tiles/stamen_toner_lite/${zoom}/${x}/${y}.png`;
-        const promise = new Promise((resolve) => {
-          const img = new Image();
-          img.crossOrigin = 'anonymous';
-          img.onload = () => resolve({ img, x, y });
-          img.onerror = () => resolve(null);
-          img.src = tileUrl;
-        });
-        tilePromises.push(promise);
+        const img = getCachedTile(x, y, zoom);
+        if (!img) continue;
+        
+        // Convert tile coordinates to lat/lon bounds
+        const n = Math.pow(2, zoom);
+        const tileLonMin = x / n * 360 - 180;
+        const tileLonMax = (x + 1) / n * 360 - 180;
+        const tileLatMax = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
+        const tileLatMin = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
+        
+        // Convert to canvas coordinates
+        const topLeft = geoToCanvas(tileLatMax, tileLonMin);
+        const bottomRight = geoToCanvas(tileLatMin, tileLonMax);
+        
+        ctx.drawImage(img, topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
       }
     }
-    
-    const tiles = await Promise.all(tilePromises);
-    
-    // Draw tiles
-    tiles.forEach(tile => {
-      if (!tile) return;
-      const { img, x, y } = tile;
-      
-      // Convert tile coordinates to lat/lon bounds
-      const n = Math.pow(2, zoom);
-      const tileLonMin = x / n * 360 - 180;
-      const tileLonMax = (x + 1) / n * 360 - 180;
-      const tileLatMax = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
-      const tileLatMin = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
-      
-      // Convert to canvas coordinates
-      const topLeft = geoToCanvas(tileLatMax, tileLonMin);
-      const bottomRight = geoToCanvas(tileLatMin, tileLonMax);
-      
-      ctx.drawImage(img, topLeft.x, topLeft.y, bottomRight.x - topLeft.x, bottomRight.y - topLeft.y);
-    });
 
     // Draw gridlines with labels (matching matplotlib style)
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
@@ -171,6 +235,25 @@ export default function Home() {
     dataCanvas.height = lat.length * interpFactor;
     const dataCtx = dataCanvas.getContext('2d');
     
+    // Calculate the actual bounds from the data coordinates
+    // This ensures the overlay aligns with the actual data points
+    const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
+    const dataLatMax = Math.max(lat[0], lat[lat.length - 1]);
+    const dataLonMin = Math.min(lon[0], lon[lon.length - 1]);
+    const dataLonMax = Math.max(lon[0], lon[lon.length - 1]);
+    
+    // Calculate pixel size in geographic units
+    const latStep = (dataLatMax - dataLatMin) / (lat.length - 1);
+    const lonStep = (dataLonMax - dataLonMin) / (lon.length - 1);
+    
+    // Extend bounds by half a pixel to properly center the data
+    const dataBounds = {
+      minLat: dataLatMin - latStep / 2,
+      maxLat: dataLatMax + latStep / 2,
+      minLon: dataLonMin - lonStep / 2,
+      maxLon: dataLonMax + lonStep / 2
+    };
+    
     // First, draw original data to small canvas
     const smallCanvas = document.createElement('canvas');
     smallCanvas.width = lon.length;
@@ -209,9 +292,9 @@ export default function Home() {
     dataCtx.imageSmoothingQuality = 'high';
     dataCtx.drawImage(smallCanvas, 0, 0, dataCanvas.width, dataCanvas.height);
     
-    // Draw smoothed data onto main canvas
-    const mapTopLeft = geoToCanvas(bounds.maxLat, bounds.minLon);
-    const mapBottomRight = geoToCanvas(bounds.minLat, bounds.maxLon);
+    // Draw smoothed data onto main canvas using pixel-centered bounds
+    const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);
+    const mapBottomRight = geoToCanvas(dataBounds.minLat, dataBounds.maxLon);
     
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
@@ -307,17 +390,75 @@ export default function Home() {
     }
   }, [viewMode]);
 
+  // Auto-load data when period, timeIndex, or viewMode changes
+  useEffect(() => {
+    if (period && availableTimes.length > 0) {
+      // Add small delay to allow switch animation to complete
+      const timer = setTimeout(() => {
+        fetchPrecipData();
+      }, 2000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [period, timeIndex, viewMode]);
+
   return (
     <div className="app">
-      <h1>Tes 1</h1>
-
+      <h1>Precipitation Data</h1>
       <div className="content-wrapper">
         <div className="controls-section">
-          {/* Add precipitation controls */}
           <section className="control-group">
-            <h3>Precipitation Data:</h3>
-            
-            <div className="dropdown-row" style={{ marginBottom: '10px' }}>
+            {/* View Mode Switch - First */}
+            <div className="dropdown-row" style={{ marginBottom: '15px' }}>
+              <div style={{ 
+                display: 'flex', 
+                width: '100%',
+                backgroundColor: '#0000CD', 
+                borderRadius: '10px', 
+                padding: '4px',
+                gap: '0'
+              }}>
+                <button
+                  onClick={() => setViewMode('leaflet')}
+                  style={{
+                    flex: 1,
+                    padding: '10px 24px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '14px',
+                    transition: 'all 0.3s ease',
+                    backgroundColor: viewMode === 'leaflet' ? 'white' : 'transparent',
+                    color: viewMode === 'leaflet' ? '#0000CD' : 'white',
+                    boxShadow: viewMode === 'leaflet' ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                  }}
+                >
+                  Interactive
+                </button>
+                <button
+                  onClick={() => setViewMode('png')}
+                  style={{
+                    flex: 1,
+                    padding: '10px 24px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '14px',
+                    transition: 'all 0.3s ease',
+                    backgroundColor: viewMode === 'png' ? 'white' : 'transparent',
+                    color: viewMode === 'png' ? '#0000CD' : 'white',
+                    boxShadow: viewMode === 'png' ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
+                  }}
+                >
+                  Static
+                </button>
+              </div>
+            </div>
+
+            {/* Period - Second */}
+            <div className="dropdown-row" style={{ marginBottom: '15px' }}>
               <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Period:</label>
               <select 
                 value={period}
@@ -332,7 +473,8 @@ export default function Home() {
               </select>
             </div>
             
-            <div className="dropdown-row">
+            {/* Time - Third */}
+            <div className="dropdown-row" style={{ marginBottom: '15px' }}>
               <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Time:</label>
               <select 
                 value={timeIndex}
@@ -346,23 +488,10 @@ export default function Home() {
                   </option>
                 ))}
               </select>
-              <button onClick={fetchPrecipData} disabled={loading}>
-                {loading ? 'Loading...' : 'Load Data'}
-              </button>
-            </div>
-
-            <div className="dropdown-row" style={{ marginTop: '10px' }}>
-              <label style={{ marginRight: '10px', fontWeight: 'bold' }}>View Mode:</label>
-              <select 
-                value={viewMode}
-                onChange={(e) => setViewMode(e.target.value)}
-                style={{ flex: 1 }}
-              >
-                <option value="leaflet">Interactive Map (Leaflet)</option>
-                <option value="png">Static Image (PNG)</option>
-              </select>
+              {loading && <span style={{ marginLeft: '10px', color: '#666' }}>Loading...</span>}
             </div>
             
+            {/* Stats */}
             {precipData && precipData.stats && (
               <div style={{ marginTop: '10px', fontSize: '12px' }}>
                 <p>Min: {precipData.stats.min?.toFixed(2) ?? 'N/A'} mm</p>
@@ -376,13 +505,10 @@ export default function Home() {
               </div>
             )}
           </section>
-
-          {/* ... your existing controls ... */}
         </div>
 
+        {/* Visualization - Fourth */}
         <div className="image-section">
-          {/* ... your existing content ... */}
-          
           <div className="map-display">
             <h3>Precipitation Visualization:</h3>
             {viewMode === 'leaflet' ? (
