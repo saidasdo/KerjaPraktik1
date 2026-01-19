@@ -3,6 +3,8 @@ from flask_cors import CORS
 import xarray as xr
 import numpy as np
 import struct
+from functools import lru_cache
+import time as time_module
 
 app = Flask(__name__)
 CORS(app)
@@ -57,6 +59,79 @@ def get_land_mask(subsample=2):
     except Exception as e:
         print(f"Error loading land mask: {e}")
         return None
+
+
+# Cache for processed precipitation data (maxsize=200 for ~200 time steps)
+@lru_cache(maxsize=200)
+def get_cached_precip_data(period, time_index, subsample):
+    """Cache processed precipitation data to avoid re-reading NetCDF files"""
+    start_time = time_module.time()
+    
+    url = BASE_URL_TEMPLATE.format(period=period)
+    ds = xr.open_dataset(url, engine="netcdf4")
+    
+    # Get bounds from full dataset
+    full_lats = ds['lat'].values
+    full_lons = ds['lon'].values
+    bounds = (
+        float(np.min(full_lats)), float(np.max(full_lats)),
+        float(np.min(full_lons)), float(np.max(full_lons))
+    )
+    
+    # Get data for specific time
+    pr_data = ds['pr'].isel(time=time_index)
+    pr_data = pr_data.where((pr_data > -1e30) & (pr_data >= 0))
+    
+    # Subsample
+    pr_subsampled = pr_data.isel(lat=slice(None, None, subsample), 
+                                  lon=slice(None, None, subsample))
+    
+    # Convert to numpy
+    values = pr_subsampled.values
+    values = np.nan_to_num(values, nan=-999).astype(np.float32)
+    
+    # Apply land mask
+    land_mask = get_land_mask(subsample)
+    if land_mask is not None and land_mask.shape == values.shape:
+        values = np.where(land_mask, values, -999).astype(np.float32)
+    
+    # Get coordinates
+    lats = pr_subsampled.lat.values
+    lons = pr_subsampled.lon.values
+    
+    if len(lats) > 1:
+        lat_min, lat_max = float(lats[0]), float(lats[-1])
+        lats = np.linspace(lat_min, lat_max, len(lats)).astype(np.float32)
+    
+    if len(lons) > 1:
+        lon_min, lon_max = float(lons[0]), float(lons[-1])
+        lons = np.linspace(lon_min, lon_max, len(lons)).astype(np.float32)
+    
+    # Calculate stats
+    valid_values = values[values != -999]
+    stats = (
+        0.0,  # min
+        100.0,  # max
+        float(np.mean(valid_values)) if len(valid_values) > 0 else 0.0,
+        float(np.min(valid_values)) if len(valid_values) > 0 else 0.0,
+        float(np.max(valid_values)) if len(valid_values) > 0 else 0.0
+    )
+    
+    total_times = len(ds.time)
+    ds.close()
+    
+    elapsed = time_module.time() - start_time
+    print(f"Cached data for {period}/{time_index} (subsample={subsample}) in {elapsed*1000:.0f}ms")
+    
+    return {
+        'lats': lats,
+        'lons': lons,
+        'values': values,
+        'bounds': bounds,
+        'stats': stats,
+        'total_times': total_times
+    }
+
 
 @app.route('/', methods=['GET'])
 def index():
@@ -199,7 +274,7 @@ def get_precipitation():
 
 @app.route('/api/precipitation/binary', methods=['GET'])
 def get_precipitation_binary():
-    """Binary endpoint for faster data transfer"""
+    """Binary endpoint for faster data transfer - uses server-side caching"""
     try:
         # Get parameters
         period = request.args.get('period', '202512')
@@ -210,81 +285,27 @@ def get_precipitation_binary():
         if period not in AVAILABLE_PERIODS:
             return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
         
-        # Build URL
-        url = BASE_URL_TEMPLATE.format(period=period)
+        # Use cached data (HUGE speedup for repeated requests)
+        start_time = time_module.time()
+        cached = get_cached_precip_data(period, time_index, subsample)
+        cache_time = time_module.time() - start_time
         
-        # Open dataset
-        ds = xr.open_dataset(url, engine="netcdf4")
-        
-        # Get bounds
-        full_lats = ds['lat'].values
-        full_lons = ds['lon'].values
-        actual_bounds = {
-            'minLat': float(np.min(full_lats)),
-            'maxLat': float(np.max(full_lats)),
-            'minLon': float(np.min(full_lons)),
-            'maxLon': float(np.max(full_lons))
-        }
-        
-        # Get data for specific time
-        pr_data = ds['pr'].isel(time=time_index)
-        pr_data = pr_data.where((pr_data > -1e30) & (pr_data >= 0))
-        
-        # Subsample
-        pr_subsampled = pr_data.isel(lat=slice(None, None, subsample), 
-                                      lon=slice(None, None, subsample))
-        
-        # Convert to numpy
-        values = pr_subsampled.values
-        values = np.nan_to_num(values, nan=-999).astype(np.float32)
-        
-        # Apply land mask
-        land_mask = get_land_mask(subsample)
-        if land_mask is not None and land_mask.shape == values.shape:
-            values = np.where(land_mask, values, -999).astype(np.float32)
-        
-        # Get coordinates
-        lats = pr_subsampled.lat.values
-        lons = pr_subsampled.lon.values
-        
-        if len(lats) > 1:
-            lat_min, lat_max = float(lats[0]), float(lats[-1])
-            lats = np.linspace(lat_min, lat_max, len(lats)).astype(np.float32)
-        
-        if len(lons) > 1:
-            lon_min, lon_max = float(lons[0]), float(lons[-1])
-            lons = np.linspace(lon_min, lon_max, len(lons)).astype(np.float32)
-        
-        # Calculate stats
-        valid_values = values[values != -999]
-        stats_min = 0.0
-        stats_max = 100.0
-        stats_mean = float(np.mean(valid_values)) if len(valid_values) > 0 else 0.0
-        actual_min = float(np.min(valid_values)) if len(valid_values) > 0 else 0.0
-        actual_max = float(np.max(valid_values)) if len(valid_values) > 0 else 0.0
-        
-        total_times = len(ds.time)
-        ds.close()
+        lats = cached['lats']
+        lons = cached['lons']
+        values = cached['values']
+        bounds = cached['bounds']
+        stats = cached['stats']
+        total_times = cached['total_times']
         
         # Build binary response
-        # Header: 
-        #   4 bytes: lat count (int32)
-        #   4 bytes: lon count (int32)
-        #   4 bytes: time_index (int32)
-        #   4 bytes: total_times (int32)
-        #   4x4 bytes: bounds (minLat, maxLat, minLon, maxLon as float32)
-        #   5x4 bytes: stats (min, max, mean, actualMin, actualMax as float32)
-        # Then: lats array (float32), lons array (float32), values array (float32)
-        
         lat_count = len(lats)
         lon_count = len(lons)
         
         # Pack header (13 values)
         header = struct.pack('<4i9f',
             lat_count, lon_count, time_index, total_times,
-            actual_bounds['minLat'], actual_bounds['maxLat'],
-            actual_bounds['minLon'], actual_bounds['maxLon'],
-            stats_min, stats_max, stats_mean, actual_min, actual_max
+            bounds[0], bounds[1], bounds[2], bounds[3],  # minLat, maxLat, minLon, maxLon
+            stats[0], stats[1], stats[2], stats[3], stats[4]  # min, max, mean, actualMin, actualMax
         )
         
         # Pack arrays as bytes
@@ -295,7 +316,7 @@ def get_precipitation_binary():
         # Combine all
         binary_data = header + lat_bytes + lon_bytes + values_bytes
         
-        print(f"Binary response: {len(binary_data)} bytes (header: {len(header)}, lats: {len(lat_bytes)}, lons: {len(lon_bytes)}, values: {len(values_bytes)})")
+        print(f"Binary response: {len(binary_data)} bytes in {cache_time*1000:.0f}ms (cached: {cache_time < 0.01})")
         
         return Response(binary_data, mimetype='application/octet-stream')
         

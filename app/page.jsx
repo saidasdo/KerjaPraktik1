@@ -137,9 +137,10 @@ const parseBinaryPrecipData = (buffer) => {
 };
 
 // Fetch binary data (3-4x faster than JSON)
-const fetchBinaryPrecipData = async (periodParam, timeParam) => {
+// subsample: 1 = full resolution, 2 = half resolution (4x less data), etc.
+const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 1) => {
   const response = await fetch(
-    `http://localhost:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=1`
+    `http://localhost:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=${subsample}`
   );
   const buffer = await response.arrayBuffer();
   return parseBinaryPrecipData(buffer);
@@ -489,24 +490,48 @@ export default function Home() {
     
     let currentFrame = animationFrom;
     const localCache = { ...dataCache }; // Local copy to avoid state sync issues
+    const ANIMATION_SUBSAMPLE = 2; // Use lower resolution for smoother animation (4x less data)
+    const PREFETCH_COUNT = 3; // Number of frames to prefetch ahead
+    
+    // Prefetch next frames in parallel
+    const prefetchFrames = (fromFrame) => {
+      const promises = [];
+      for (let i = 1; i <= PREFETCH_COUNT; i++) {
+        let nextFrame = fromFrame + i;
+        if (nextFrame > animationTo) nextFrame = animationFrom + (nextFrame - animationTo - 1);
+        const cacheKey = `${period}_${nextFrame}_anim`;
+        if (!localCache[cacheKey]) {
+          promises.push(
+            fetchBinaryPrecipData(period, nextFrame, ANIMATION_SUBSAMPLE)
+              .then(data => {
+                localCache[cacheKey] = data;
+              })
+              .catch(() => {})
+          );
+        }
+      }
+      // Fire and forget - don't await
+      Promise.all(promises);
+    };
     
     const animate = async () => {
       if (!isPlayingRef.current) return;
       
-      const cacheKey = `${period}_${currentFrame}`;
+      const cacheKey = `${period}_${currentFrame}_anim`;
       let frameData = localCache[cacheKey];
       
-      // Fetch on-demand if not cached
+      // Fetch on-demand if not cached (with lower resolution for speed)
       if (!frameData) {
         try {
-          frameData = await fetchBinaryPrecipData(period, currentFrame);
+          frameData = await fetchBinaryPrecipData(period, currentFrame, ANIMATION_SUBSAMPLE);
           localCache[cacheKey] = frameData;
-          // Update global cache in background
-          setDataCache(prev => ({ ...prev, [cacheKey]: frameData }));
         } catch (error) {
           console.error(`Error fetching frame ${currentFrame}:`, error);
         }
       }
+      
+      // Prefetch upcoming frames in background
+      prefetchFrames(currentFrame);
       
       if (frameData && isPlayingRef.current) {
         setPrecipData(frameData);

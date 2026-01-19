@@ -154,10 +154,11 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   const height = lat.length;
   const latAscending = lat[0] < lat[lat.length - 1];
   
-  // First pass: find actual data range for logging
+  // First pass: analyze data distribution
   let minFound = Infinity;
   let maxFound = -Infinity;
   let validCount = 0;
+  const allValidValues = [];
   
   for (let i = 0; i < height; i++) {
     for (let j = 0; j < width; j++) {
@@ -166,27 +167,35 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
       
       if (value !== -999 && value >= 0) {
         validCount++;
+        allValidValues.push(value);
         if (value < minFound) minFound = value;
         if (value > maxFound) maxFound = value;
       }
     }
   }
   
-  // Use actual data range for full color spectrum, not fixed scale
-  const actualMin = minFound === Infinity ? 0 : minFound;
-  const actualMax = maxFound === -Infinity ? 1 : Math.max(maxFound, actualMin + 0.001);
-  const actualRange = actualMax - actualMin;
+  // Sort to find percentiles for better color distribution
+  allValidValues.sort((a, b) => a - b);
+  const p10 = allValidValues[Math.floor(allValidValues.length * 0.1)] || 0;
+  const p50 = allValidValues[Math.floor(allValidValues.length * 0.5)] || 0;
+  const p90 = allValidValues[Math.floor(allValidValues.length * 0.9)] || 0;
+  const p99 = allValidValues[Math.floor(allValidValues.length * 0.99)] || maxFound;
   
   console.log('WebGL data analysis:', { 
     width, height, validCount, 
     dataMin: minFound, dataMax: maxFound, 
-    actualRange,
+    percentiles: { p10, p50, p90, p99 },
     scaleMin: minVal, scaleMax: maxVal 
   });
   
-  // Pack data into RGBA texture (R = value normalized to ACTUAL range for full color spectrum)
+  // Use p99 as effective max to avoid outliers dominating the scale
+  const effectiveMax = Math.max(p99, 1);
+  
+  // Pack data into RGBA texture
+  // Use square root (gamma 0.5) scaling for better distribution of precipitation data
   const textureData = new Uint8Array(width * height * 4);
   let sampleValues = [];
+  let colorDistribution = { low: 0, mid: 0, high: 0 }; // Track color distribution
   
   for (let i = 0; i < height; i++) {
     for (let j = 0; j < width; j++) {
@@ -195,16 +204,29 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
       const texIdx = (i * width + j) * 4;
       
       if (value !== -999 && value >= 0) {
-        // Normalize to ACTUAL data range (0 to actualMax) for full color spectrum
-        const normalizedValue = Math.min(255, Math.max(0, ((value - actualMin) / actualRange) * 255));
-        textureData[texIdx] = Math.round(normalizedValue);     // R: normalized value (0-255)
+        // Normalize to 0-1 using effective max (p99)
+        const normalized01 = Math.min(1, value / effectiveMax);
+        
+        // Apply square root (gamma 0.5) for better distribution
+        // This expands the low values and compresses high values
+        const gammaCorrected = Math.sqrt(normalized01);
+        
+        // Convert to 0-255
+        const normalizedValue = Math.round(gammaCorrected * 255);
+        
+        textureData[texIdx] = normalizedValue;     // R: normalized value (0-255)
         textureData[texIdx + 1] = 0;               // G: unused
         textureData[texIdx + 2] = 0;               // B: unused
         textureData[texIdx + 3] = 255;             // A: valid
         
+        // Track distribution
+        if (normalizedValue < 85) colorDistribution.low++;
+        else if (normalizedValue < 170) colorDistribution.mid++;
+        else colorDistribution.high++;
+        
         // Collect sample values for debugging
         if (sampleValues.length < 10 && value > 0) {
-          sampleValues.push({ value, normalized: Math.round(normalizedValue) });
+          sampleValues.push({ value: value.toFixed(2), normalized: normalizedValue });
         }
       } else {
         textureData[texIdx] = 0;
@@ -215,6 +237,7 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
     }
   }
   
+  console.log('WebGL color distribution:', colorDistribution);
   console.log('WebGL sample values (first 10 non-zero):', sampleValues);
   
   const texture = gl.createTexture();
