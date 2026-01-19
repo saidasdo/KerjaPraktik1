@@ -24,6 +24,22 @@ REFERENCE_PERIOD = '202508'
 # Cache for land mask
 _land_mask_cache = None
 
+# Cache for open dataset connections (avoids repeated metadata fetches)
+_dataset_cache = {}
+
+def get_dataset(period):
+    """Cache open dataset connections to avoid repeated metadata fetches"""
+    global _dataset_cache
+    
+    if period in _dataset_cache:
+        return _dataset_cache[period]
+    
+    url = BASE_URL_TEMPLATE.format(period=period)
+    print(f"📂 Opening new dataset connection for {period}...")
+    ds = xr.open_dataset(url, engine="netcdf4")
+    _dataset_cache[period] = ds
+    return ds
+
 def get_land_mask(subsample=2):
     """Get land mask from reference dataset (202508 has proper ocean masking)"""
     global _land_mask_cache
@@ -61,41 +77,55 @@ def get_land_mask(subsample=2):
         return None
 
 
-# Cache for processed precipitation data (maxsize=200 for ~200 time steps)
-@lru_cache(maxsize=200)
+# Cache for processed precipitation data (maxsize=500 for more time steps)
+@lru_cache(maxsize=500)
 def get_cached_precip_data(period, time_index, subsample):
     """Cache processed precipitation data to avoid re-reading NetCDF files"""
-    start_time = time_module.time()
+    t_start = time_module.time()
+    timings = {}
     
-    url = BASE_URL_TEMPLATE.format(period=period)
-    ds = xr.open_dataset(url, engine="netcdf4")
+    # 1. Get cached dataset (HUGE speedup - reuses connection!)
+    t1 = time_module.time()
+    ds = get_dataset(period)  # ← Uses cached connection instead of opening new one
+    timings['open_dataset'] = (time_module.time() - t1) * 1000
     
-    # Get bounds from full dataset
+    # 2. Get bounds from full dataset
+    t2 = time_module.time()
     full_lats = ds['lat'].values
     full_lons = ds['lon'].values
     bounds = (
         float(np.min(full_lats)), float(np.max(full_lats)),
         float(np.min(full_lons)), float(np.max(full_lons))
     )
+    timings['get_bounds'] = (time_module.time() - t2) * 1000
     
-    # Get data for specific time
+    # 3. Get data for specific time and subsample
+    t3 = time_module.time()
     pr_data = ds['pr'].isel(time=time_index)
     pr_data = pr_data.where((pr_data > -1e30) & (pr_data >= 0))
-    
-    # Subsample
     pr_subsampled = pr_data.isel(lat=slice(None, None, subsample), 
                                   lon=slice(None, None, subsample))
+    timings['select_data'] = (time_module.time() - t3) * 1000
     
-    # Convert to numpy
+    # 4. Convert to numpy (THIS IS WHERE ACTUAL DATA TRANSFER HAPPENS!)
+    t4 = time_module.time()
     values = pr_subsampled.values
-    values = np.nan_to_num(values, nan=-999).astype(np.float32)
+    timings['to_numpy'] = (time_module.time() - t4) * 1000
     
-    # Apply land mask
+    # 5. Process values
+    t5 = time_module.time()
+    values = np.nan_to_num(values, nan=-999).astype(np.float32)
+    timings['nan_to_num'] = (time_module.time() - t5) * 1000
+    
+    # 6. Apply land mask
+    t6 = time_module.time()
     land_mask = get_land_mask(subsample)
     if land_mask is not None and land_mask.shape == values.shape:
         values = np.where(land_mask, values, -999).astype(np.float32)
+    timings['land_mask'] = (time_module.time() - t6) * 1000
     
-    # Get coordinates
+    # 7. Get coordinates
+    t7 = time_module.time()
     lats = pr_subsampled.lat.values
     lons = pr_subsampled.lon.values
     
@@ -106,8 +136,10 @@ def get_cached_precip_data(period, time_index, subsample):
     if len(lons) > 1:
         lon_min, lon_max = float(lons[0]), float(lons[-1])
         lons = np.linspace(lon_min, lon_max, len(lons)).astype(np.float32)
+    timings['coords'] = (time_module.time() - t7) * 1000
     
-    # Calculate stats
+    # 8. Calculate stats
+    t8 = time_module.time()
     valid_values = values[values != -999]
     stats = (
         0.0,  # min
@@ -116,12 +148,25 @@ def get_cached_precip_data(period, time_index, subsample):
         float(np.min(valid_values)) if len(valid_values) > 0 else 0.0,
         float(np.max(valid_values)) if len(valid_values) > 0 else 0.0
     )
+    timings['stats'] = (time_module.time() - t8) * 1000
     
     total_times = len(ds.time)
-    ds.close()
+    # DON'T close dataset - keep connection alive for reuse!
     
-    elapsed = time_module.time() - start_time
-    print(f"Cached data for {period}/{time_index} (subsample={subsample}) in {elapsed*1000:.0f}ms")
+    timings['total'] = (time_module.time() - t_start) * 1000
+    
+    # Print detailed timing breakdown
+    print(f"\n⏱️ TIMING for {period}/{time_index} (subsample={subsample}):")
+    print(f"  📂 open_dataset:  {timings['open_dataset']:>7.0f}ms")
+    print(f"  📍 get_bounds:    {timings['get_bounds']:>7.0f}ms")
+    print(f"  🔍 select_data:   {timings['select_data']:>7.0f}ms")
+    print(f"  📊 to_numpy:      {timings['to_numpy']:>7.0f}ms  ← DATA TRANSFER")
+    print(f"  🔢 nan_to_num:    {timings['nan_to_num']:>7.0f}ms")
+    print(f"  🗺️  land_mask:     {timings['land_mask']:>7.0f}ms")
+    print(f"  📐 coords:        {timings['coords']:>7.0f}ms")
+    print(f"  📈 stats:         {timings['stats']:>7.0f}ms")
+    print(f"  ─────────────────────────")
+    print(f"  ⏱️  TOTAL:         {timings['total']:>7.0f}ms\n")
     
     return {
         'lats': lats,
@@ -276,6 +321,9 @@ def get_precipitation():
 def get_precipitation_binary():
     """Binary endpoint for faster data transfer - uses server-side caching"""
     try:
+        request_start = time_module.time()
+        timings = {}
+        
         # Get parameters
         period = request.args.get('period', '202512')
         time_index = int(request.args.get('time', 0))
@@ -286,9 +334,9 @@ def get_precipitation_binary():
             return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
         
         # Use cached data (HUGE speedup for repeated requests)
-        start_time = time_module.time()
+        t1 = time_module.time()
         cached = get_cached_precip_data(period, time_index, subsample)
-        cache_time = time_module.time() - start_time
+        timings['cache_lookup'] = (time_module.time() - t1) * 1000
         
         lats = cached['lats']
         lons = cached['lons']
@@ -298,6 +346,7 @@ def get_precipitation_binary():
         total_times = cached['total_times']
         
         # Build binary response
+        t2 = time_module.time()
         lat_count = len(lats)
         lon_count = len(lons)
         
@@ -315,8 +364,12 @@ def get_precipitation_binary():
         
         # Combine all
         binary_data = header + lat_bytes + lon_bytes + values_bytes
+        timings['binary_pack'] = (time_module.time() - t2) * 1000
         
-        print(f"Binary response: {len(binary_data)} bytes in {cache_time*1000:.0f}ms (cached: {cache_time < 0.01})")
+        timings['total'] = (time_module.time() - request_start) * 1000
+        is_cached = timings['cache_lookup'] < 10  # Less than 10ms means it was cached
+        
+        print(f"📦 Binary: {len(binary_data)/1024:.1f}KB | cache: {timings['cache_lookup']:.0f}ms | pack: {timings['binary_pack']:.0f}ms | total: {timings['total']:.0f}ms | {'✅ CACHED' if is_cached else '🔄 FRESH'}")
         
         return Response(binary_data, mimetype='application/octet-stream')
         

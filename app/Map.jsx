@@ -51,6 +51,48 @@ export default function Map({ precipData }) {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
+  const [clickInfo, setClickInfo] = useState(null);
+  const markerRef = useRef(null);
+
+  // Function to get precipitation value at lat/lon
+  const getPrecipitationAt = (lat, lon) => {
+    if (!precipData || !precipData.lat || !precipData.lon || !precipData.values) {
+      return null;
+    }
+
+    const { lat: lats, lon: lons, values } = precipData;
+
+    // Find nearest grid point
+    let nearestLatIdx = 0;
+    let nearestLonIdx = 0;
+    let minLatDist = Math.abs(lats[0] - lat);
+    let minLonDist = Math.abs(lons[0] - lon);
+
+    for (let i = 0; i < lats.length; i++) {
+      const dist = Math.abs(lats[i] - lat);
+      if (dist < minLatDist) {
+        minLatDist = dist;
+        nearestLatIdx = i;
+      }
+    }
+
+    for (let j = 0; j < lons.length; j++) {
+      const dist = Math.abs(lons[j] - lon);
+      if (dist < minLonDist) {
+        minLonDist = dist;
+        nearestLonIdx = j;
+      }
+    }
+
+    const value = values[nearestLatIdx]?.[nearestLonIdx];
+    
+    // Return null if no valid data
+    if (value === undefined || value === null || value === -999 || value < 0) {
+      return null;
+    }
+
+    return value;
+  };
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -74,7 +116,7 @@ export default function Map({ precipData }) {
         attribution: '&copy; OpenStreetMap & CartoDB',
         noWrap: true,
         minZoom: 0,  // Show only at zoom 7 and higher (province level)
-        maxZoom: 6
+        maxZoom: 5
       }
     ).addTo(map);
 
@@ -82,7 +124,7 @@ export default function Map({ precipData }) {
     // OpenStreetMap with labels - shown when zoomed out (country/regional view)
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      minZoom: 7,
+      minZoom: 6,
       maxZoom: 18  // Hide when zooming in beyond zoom 6
     }).addTo(map);
 
@@ -98,6 +140,101 @@ export default function Map({ precipData }) {
       }
     };
   }, []);
+
+  // Add click handler when map and data are ready
+  useEffect(() => {
+    if (!mapInstanceRef.current || !precipData) return;
+
+    const L = require('leaflet');
+    const map = mapInstanceRef.current;
+
+    const handleClick = (e) => {
+      const { lat, lng } = e.latlng;
+      const precip = getPrecipitationAt(lat, lng);
+
+      // Remove old marker if exists
+      if (markerRef.current) {
+        map.removeLayer(markerRef.current);
+      }
+
+      if (precip !== null) {
+        // Get data range for context
+        const { values } = precipData;
+        const allValues = values.flat().filter(v => v !== -999 && v >= 0);
+        allValues.sort((a, b) => a - b);
+        const p99 = allValues[Math.floor(allValues.length * 0.99)] || Math.max(...allValues);
+        
+        // Calculate color position (same as WebGL shader)
+        const normalized01 = Math.min(1, precip / p99);
+        const gammaCorrected = Math.sqrt(normalized01); // Square root for better distribution
+        const colorPercent = (gammaCorrected * 100).toFixed(0);
+        
+        // Determine color range description
+        let colorDesc = '';
+        if (gammaCorrected < 0.167) colorDesc = 'Yellow (Low)';
+        else if (gammaCorrected < 0.333) colorDesc = 'Lime-Green';
+        else if (gammaCorrected < 0.5) colorDesc = 'Green';
+        else if (gammaCorrected < 0.667) colorDesc = 'Cyan';
+        else if (gammaCorrected < 0.833) colorDesc = 'Blue';
+        else colorDesc = 'Dark Blue (High)';
+        
+        // Create popup content
+        const popupContent = `
+          <div style="font-size: 13px;">
+            <strong>Location:</strong><br/>
+            Lat: ${lat.toFixed(4)}°<br/>
+            Lon: ${lng.toFixed(4)}°<br/>
+            <br/>
+            <strong>Precipitation:</strong><br/>
+            ${precip.toFixed(2)} mm/day<br/>
+            <br/>
+          </div>
+        `;
+
+        // Create marker with popup
+        const marker = L.marker([lat, lng])
+          .addTo(map)
+          .bindPopup(popupContent)
+          .openPopup();
+
+        markerRef.current = marker;
+
+        // Update state for info box
+        setClickInfo({
+          lat: lat.toFixed(4),
+          lon: lng.toFixed(4),
+          precip: precip.toFixed(2)
+        });
+      } else {
+        // Show "no data" popup
+        const marker = L.marker([lat, lng])
+          .addTo(map)
+          .bindPopup(`
+            <div style="font-size: 13px;">
+              <strong>Location:</strong><br/>
+              Lat: ${lat.toFixed(4)}°<br/>
+              Lon: ${lng.toFixed(4)}°<br/>
+              <br/>
+              <em>No precipitation data</em>
+            </div>
+          `)
+          .openPopup();
+
+        markerRef.current = marker;
+        setClickInfo(null);
+      }
+    };
+
+    map.on('click', handleClick);
+
+    return () => {
+      map.off('click', handleClick);
+      if (markerRef.current) {
+        map.removeLayer(markerRef.current);
+        markerRef.current = null;
+      }
+    };
+  }, [precipData]);
 
   return (
     <div style={{ position: 'relative' }}>

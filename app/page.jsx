@@ -52,7 +52,7 @@ const preloadTiles = async (bounds, zoom, onProgress) => {
         continue;
       }
       
-      const tileUrl = `https://tiles.stadiamaps.com/tiles/stamen_toner_lite/${zoom}/${x}/${y}.png`;
+      const tileUrl = `https://a.basemaps.cartocdn.com/light_nolabels/${zoom}/${x}/${y}.png`;
       const promise = new Promise((resolve) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
@@ -81,6 +81,58 @@ const preloadTiles = async (bounds, zoom, onProgress) => {
 const getCachedTile = (x, y, zoom) => {
   const tileKey = `${zoom}/${x}/${y}`;
   return tileCache[tileKey] || null;
+};
+
+// Format period YYYYMM to readable format like "December 2024"
+const formatPeriod = (periodStr) => {
+  if (!periodStr || periodStr.length !== 6) return periodStr;
+  const year = periodStr.substring(0, 4);
+  const month = parseInt(periodStr.substring(4, 6));
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+  return `${monthNames[month - 1]} ${year}`;
+};
+
+// Format period for dropdown with short month
+const formatPeriodShort = (periodStr) => {
+  if (!periodStr || periodStr.length !== 6) return periodStr;
+  const year = periodStr.substring(0, 4);
+  const month = parseInt(periodStr.substring(4, 6));
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${monthNames[month - 1]} ${year}`;
+};
+
+// Format time string "2024-12-01T00:00:00" to "1 Dec 2024" or "Dec 1, 2024"
+const formatTime = (timeStr) => {
+  if (!timeStr) return '';
+  try {
+    const date = new Date(timeStr);
+    const day = date.getDate();
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = monthNames[date.getMonth()];
+    const year = date.getFullYear();
+    return `${day} ${month} ${year}`;
+  } catch {
+    return timeStr;
+  }
+};
+
+// Format time for title (longer format)
+const formatTimeLong = (timeStr) => {
+  if (!timeStr) return '';
+  try {
+    const date = new Date(timeStr);
+    const day = date.getDate();
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    const month = monthNames[date.getMonth()];
+    const year = date.getFullYear();
+    return `${day} ${month} ${year}`;
+  } catch {
+    return timeStr;
+  }
 };
 // Parse binary precipitation data (much faster than JSON)
 const parseBinaryPrecipData = (buffer) => {
@@ -246,7 +298,7 @@ export default function Home() {
       return { x, y };
     };
 
-    // Draw tiles from cache (using Stamen Toner Lite - just coastlines, no labels)
+    // Draw tiles from cache (label-free basemap - only coastlines and borders)
     const zoom = 6;
     const { minTileX, maxTileX, minTileY, maxTileY } = getTileCoordinates(bounds, zoom);
     
@@ -285,11 +337,6 @@ export default function Home() {
       ctx.moveTo(p1.x, p1.y);
       ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
-      
-      // Label
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(`${lt}°`, padding.left - 15, p1.y);
     }
 
     // Longitude lines (every 10 degrees)
@@ -300,17 +347,13 @@ export default function Home() {
       ctx.moveTo(p1.x, p1.y);
       ctx.lineTo(p2.x, p2.y);
       ctx.stroke();
-      
-      // Label
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.fillText(`${ln}°`, p1.x, padding.top + mapHeight + 15);
     }
 
-    // Create high-resolution canvas for WebGL rendering
+    // Create high-resolution canvas for WebGL rendering (increase multiplier for smoother edges)
     const dataCanvas = document.createElement('canvas');
-    dataCanvas.width = lon.length * 4;
-    dataCanvas.height = lat.length * 4;
+    const resolutionMultiplier = 12; // Higher = smoother but slower
+    dataCanvas.width = lon.length * resolutionMultiplier;
+    dataCanvas.height = lat.length * resolutionMultiplier;
     
     // Calculate the actual bounds from the data coordinates
     const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
@@ -394,10 +437,22 @@ export default function Home() {
     ctx.fillText('Daily Precipitation (mm)', 0, 0);
     ctx.restore();
 
-    // Title
+    // Title with period and time
     ctx.font = 'bold 28px Arial';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#000';
+    
+    // Get current time string for the title
+    const currentTimeStr = availableTimes[data.timeIndex] || availableTimes[timeIndex] || '';
+    const titleDate = formatTimeLong(currentTimeStr);
+    const titlePeriod = formatPeriod(period);
+    
+    // Draw main title
+    ctx.fillText(`Daily Precipitation - ${titlePeriod}`, width / 2, 40);
+    
+    // Draw date subtitle
+    ctx.font = '22px Arial';
+    ctx.fillText(titleDate, width / 2, 75);
 
     return canvas.toDataURL('image/png');
   };
@@ -639,7 +694,7 @@ export default function Home() {
               >
                 {availablePeriods.map((p) => (
                   <option key={p} value={p}>
-                    {p.substring(0, 4)}-{p.substring(4, 6)}
+                    {formatPeriodShort(p)}
                   </option>
                 ))}
               </select>
@@ -656,7 +711,7 @@ export default function Home() {
                 <option value="">Select Time</option>
                 {availableTimes.map((time, idx) => (
                   <option key={idx} value={idx}>
-                    {time}
+                    {formatTime(time)}
                   </option>
                 ))}
               </select>
@@ -725,7 +780,7 @@ export default function Home() {
                   style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '150px' }}
                 >
                   {availableTimes.map((time, idx) => (
-                    <option key={idx} value={idx}>{time}</option>
+                    <option key={idx} value={idx}>{formatTime(time)}</option>
                   ))}
                 </select>
               </div>
@@ -740,7 +795,7 @@ export default function Home() {
                   style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '150px' }}
                 >
                   {availableTimes.map((time, idx) => (
-                    <option key={idx} value={idx}>{time}</option>
+                    <option key={idx} value={idx}>{formatTime(time)}</option>
                   ))}
                 </select>
               </div>
@@ -843,7 +898,7 @@ export default function Home() {
                   marginBottom: '5px'
                 }}>
                   <span>Frame: {timeIndex - animationFrom + 1} / {animationTo - animationFrom + 1}</span>
-                  <span>{availableTimes[timeIndex] || ''}</span>
+                  <span>{formatTime(availableTimes[timeIndex])}</span>
                 </div>
                 <div style={{ 
                   height: '6px', 
