@@ -152,6 +152,14 @@ def get_cached_precip_data(period, time_index, subsample):
     )
     timings['stats'] = (time_module.time() - t8) * 1000
     
+    # Log data quality info
+    if len(valid_values) > 0:
+        actual_min = float(np.min(valid_values))
+        actual_max = float(np.max(valid_values))
+        actual_mean = float(np.mean(valid_values))
+        if actual_max > 200:
+            print(f"⚠️  HIGH RAINFALL DETECTED: max={actual_max:.1f} mm/day, mean={actual_mean:.1f} mm/day")
+    
     total_times = len(ds.time)
     # DON'T close dataset - keep connection alive for reuse!
     

@@ -247,7 +247,7 @@ export default function Map({ precipData }) {
           <PrecipitationLayerWebGL 
             map={mapInstanceRef.current} 
             data={precipData}
-            opacity={0.7}
+            opacity={0.8}
           />
           <ColorLegend stats={precipData.stats} />
         </>

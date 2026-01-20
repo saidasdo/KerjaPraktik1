@@ -723,14 +723,14 @@ export default function Home() {
                   style={{
                     flex: 1,
                     padding: '10px 24px',
-                    borderRadius: '8px',
+                    borderRadius: '6px',
                     border: 'none',
                     cursor: 'pointer',
                     fontWeight: '500',
                     fontSize: '14px',
                     transition: 'all 0.3s ease',
                     backgroundColor: viewMode === 'leaflet' ? 'white' : 'transparent',
-                    color: viewMode === 'leaflet' ? '#0000CD' : 'white',
+                    color: viewMode === 'leaflet' ? '#000080' : 'white',
                     boxShadow: viewMode === 'leaflet' ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
                   }}
                 >
@@ -748,7 +748,7 @@ export default function Home() {
                     fontSize: '14px',
                     transition: 'all 0.3s ease',
                     backgroundColor: viewMode === 'png' ? 'white' : 'transparent',
-                    color: viewMode === 'png' ? '#0000CD' : 'white',
+                    color: viewMode === 'png' ? '#000080' : 'white',
                     boxShadow: viewMode === 'png' ? '0 2px 4px rgba(0,0,0,0.1)' : 'none'
                   }}
                 >
