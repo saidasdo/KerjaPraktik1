@@ -21,8 +21,8 @@ AVAILABLE_PERIODS = [
 # Reference period with proper ocean masking
 REFERENCE_PERIOD = '202508'
 
-# Cache for land mask
-_land_mask_cache = None
+# Cache for land mask - stores masks for different subsample values
+_land_mask_cache = {}
 
 # Cache for open dataset connections (avoids repeated metadata fetches)
 _dataset_cache = {}
@@ -41,13 +41,17 @@ def get_dataset(period):
     return ds
 
 def get_land_mask(subsample=2):
-    """Get land mask from reference dataset (202508 has proper ocean masking)"""
+    """Get land mask from reference dataset (202508 has proper ocean masking)
+    Caches masks for different subsample values separately.
+    """
     global _land_mask_cache
     
-    if _land_mask_cache is not None and _land_mask_cache.get('subsample') == subsample:
-        return _land_mask_cache['mask']
+    # Check if we have this subsample cached
+    if subsample in _land_mask_cache:
+        return _land_mask_cache[subsample]
     
     try:
+        print(f"🗺️ Loading land mask for subsample={subsample}...")
         url = BASE_URL_TEMPLATE.format(period=REFERENCE_PERIOD)
         ds = xr.open_dataset(url, engine="netcdf4")
         
@@ -65,11 +69,9 @@ def get_land_mask(subsample=2):
         
         ds.close()
         
-        _land_mask_cache = {
-            'mask': land_mask,
-            'subsample': subsample
-        }
-        print(f"Land mask loaded: {np.sum(land_mask)} land pixels out of {land_mask.size}")
+        # Cache this subsample's mask
+        _land_mask_cache[subsample] = land_mask
+        print(f"✅ Land mask cached for subsample={subsample}: {np.sum(land_mask)} land pixels out of {land_mask.size}")
         
         return land_mask
     except Exception as e:
@@ -394,6 +396,93 @@ def get_times():
         return jsonify({'times': times})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/prefetch', methods=['GET'])
+def prefetch_period():
+    """
+    Prefetch all time steps for a period into cache.
+    Call this when user selects a new period - cache warms up in background.
+    """
+    try:
+        period = request.args.get('period', '202512')
+        subsample = int(request.args.get('subsample', 2))
+        
+        # Validate period
+        if period not in AVAILABLE_PERIODS:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        
+        # Get dataset to find total time steps
+        ds = get_dataset(period)
+        total_times = len(ds.time)
+        
+        print(f"🚀 Prefetching {period}: {total_times} time steps...")
+        start_time = time_module.time()
+        
+        cached_count = 0
+        already_cached = 0
+        
+        for t in range(total_times):
+            # Check if already in cache by checking cache info
+            cache_info_before = get_cached_precip_data.cache_info()
+            get_cached_precip_data(period, t, subsample)
+            cache_info_after = get_cached_precip_data.cache_info()
+            
+            if cache_info_after.hits > cache_info_before.hits:
+                already_cached += 1
+            else:
+                cached_count += 1
+        
+        elapsed = time_module.time() - start_time
+        print(f"✅ Prefetch complete: {cached_count} new + {already_cached} already cached in {elapsed:.1f}s")
+        
+        return jsonify({
+            'period': period,
+            'totalTimes': total_times,
+            'newlyCached': cached_count,
+            'alreadyCached': already_cached,
+            'elapsedSeconds': round(elapsed, 1)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cache/status', methods=['GET'])
+def cache_status():
+    """Get current cache status and statistics"""
+    cache_info = get_cached_precip_data.cache_info()
+    return jsonify({
+        'cacheSize': cache_info.currsize,
+        'maxSize': cache_info.maxsize,
+        'hits': cache_info.hits,
+        'misses': cache_info.misses,
+        'hitRate': round(cache_info.hits / max(1, cache_info.hits + cache_info.misses) * 100, 1),
+        'datasetsOpen': len(_dataset_cache)
+    })
+
+
+@app.route('/api/cache/clear', methods=['POST'])
+def clear_cache():
+    """Clear all caches (useful for debugging or freeing memory)"""
+    global _dataset_cache, _land_mask_cache
+    
+    # Clear LRU cache
+    get_cached_precip_data.cache_clear()
+    
+    # Close and clear dataset connections
+    for period, ds in _dataset_cache.items():
+        try:
+            ds.close()
+        except:
+            pass
+    _dataset_cache = {}
+    
+    # Clear land mask cache
+    _land_mask_cache = {}
+    
+    print("🗑️ All caches cleared")
+    return jsonify({'status': 'cleared'})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

@@ -1,8 +1,8 @@
 import './globals.css'
 
 export const metadata = {
-  title: 'Tes 1',
-  description: 'Tes 1',
+  title: 'Precipitation Visualization',
+  description: 'Precipitation Visualization',
 }
 
 export default function RootLayout({ children }) {

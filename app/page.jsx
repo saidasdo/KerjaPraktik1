@@ -96,11 +96,20 @@ const formatPeriod = (periodStr) => {
 // Format period for dropdown with short month
 const formatPeriodShort = (periodStr) => {
   if (!periodStr || periodStr.length !== 6) return periodStr;
-  const year = periodStr.substring(0, 4);
+  const year = parseInt(periodStr.substring(0, 4));
   const month = parseInt(periodStr.substring(4, 6));
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${monthNames[month - 1]} ${year}`;
+  
+  // Calculate end date (6 months later)
+  let endMonth = month + 5; // 6 months total, so +5 from start
+  let endYear = year;
+  if (endMonth > 12) {
+    endMonth -= 12;
+    endYear += 1;
+  }
+  
+  return `${monthNames[month - 1]} ${year} - ${monthNames[endMonth - 1]} ${endYear}`;
 };
 
 // Format time string "2024-12-01T00:00:00" to "1 Dec 2024" or "Dec 1, 2024"
@@ -190,7 +199,8 @@ const parseBinaryPrecipData = (buffer) => {
 
 // Fetch binary data (3-4x faster than JSON)
 // subsample: 1 = full resolution, 2 = half resolution (4x less data), etc.
-const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 1) => {
+// Default subsample=2 for animation speed, use subsample=1 for static high-quality view
+const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 2) => {
   const response = await fetch(
     `http://localhost:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=${subsample}`
   );
@@ -223,6 +233,52 @@ export default function Home() {
   const [dataCache, setDataCache] = useState({});
   const [isCachingData, setIsCachingData] = useState(false);
   const [cacheProgress, setCacheProgress] = useState({ loaded: 0, total: 0 });
+  
+  // Backend prefetch state
+  const [isPrefetching, setIsPrefetching] = useState(false);
+  const [prefetchStatus, setPrefetchStatus] = useState(null);
+  const prefetchAbortRef = useRef(null);
+  
+  // Function to start/restart prefetch for current period
+  const startPrefetch = (targetPeriod) => {
+    // Abort any ongoing prefetch
+    if (prefetchAbortRef.current) {
+      prefetchAbortRef.current.abort();
+    }
+    
+    const abortController = new AbortController();
+    prefetchAbortRef.current = abortController;
+    
+    setIsPrefetching(true);
+    setPrefetchStatus({ period: targetPeriod, status: 'loading', cached: 0, total: 0 });
+    
+    console.log(`🚀 Starting prefetch for ${targetPeriod}...`);
+    
+    fetch(`http://localhost:5000/api/prefetch?period=${targetPeriod}&subsample=2`, {
+      signal: abortController.signal
+    })
+      .then(res => res.json())
+      .then(data => {
+        console.log(`✅ Backend prefetch complete: ${data.newlyCached} new, ${data.alreadyCached} cached in ${data.elapsedSeconds}s`);
+        setPrefetchStatus({ 
+          period: targetPeriod, 
+          status: 'done', 
+          cached: data.newlyCached + data.alreadyCached, 
+          total: data.totalTimes,
+          elapsed: data.elapsedSeconds 
+        });
+        setIsPrefetching(false);
+      })
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          console.error('Prefetch error:', err);
+          setPrefetchStatus({ period: targetPeriod, status: 'error' });
+        } else {
+          console.log(`⏸️ Prefetch paused for ${targetPeriod}`);
+        }
+        setIsPrefetching(false);
+      });
+  };
 
   // Pre-load tiles on mount
   useEffect(() => {
@@ -246,9 +302,14 @@ export default function Home() {
       .catch(err => console.error('Error fetching periods:', err));
   }, []);
 
-  // Fetch available times when period changes
+  // Fetch available times when period changes + trigger backend prefetch
   useEffect(() => {
     if (!period) return;
+    
+    // Abort any ongoing prefetch
+    if (prefetchAbortRef.current) {
+      prefetchAbortRef.current.abort();
+    }
     
     fetch(`http://localhost:5000/api/times?period=${period}`)
       .then(res => res.json())
@@ -260,6 +321,9 @@ export default function Home() {
         setAnimationTo((data.times || []).length - 1);
       })
       .catch(err => console.error('Error fetching times:', err));
+    
+    // Start prefetch for new period
+    startPrefetch(period);
   }, [period]);
 
   // Generate PNG from precipitation data (matching matplotlib style)
@@ -458,13 +522,15 @@ export default function Home() {
   };
 
   // Fetch precipitation data (using binary for speed)
+  // Uses subsample=1 for high quality static view
+  // Runs independently of prefetch (different subsample = different cache)
   const fetchPrecipData = async () => {
     setLoading(true);
     try {
       const startTime = performance.now();
-      const data = await fetchBinaryPrecipData(period, timeIndex);
+      const data = await fetchBinaryPrecipData(period, timeIndex, 1); // Full resolution for static view
       const elapsed = performance.now() - startTime;
-      console.log(`Binary fetch took ${elapsed.toFixed(0)}ms`);
+      console.log(`Binary fetch (full res) took ${elapsed.toFixed(0)}ms`);
       
       setPrecipData(data);
       if (viewMode === 'png') {
@@ -478,17 +544,18 @@ export default function Home() {
     }
   };
 
-  // Regenerate PNG when switching modes
-  useEffect(() => {
-    if (viewMode === 'png' && precipData) {
-      const png = generatePNG(precipData);
-      setPngImage(png);
-    }
-  }, [viewMode]);
-
-  // Auto-load data when period, timeIndex, or viewMode changes (only when not playing animation)
+  // Auto-load data when period or timeIndex changes (only when not playing animation)
+  // Using a ref to prevent duplicate fetches
+  const lastFetchRef = useRef('');
+  
   useEffect(() => {
     if (period && availableTimes.length > 0 && !isPlaying) {
+      const fetchKey = `${period}_${timeIndex}`;
+      
+      // Skip if already fetching this exact data
+      if (lastFetchRef.current === fetchKey) return;
+      lastFetchRef.current = fetchKey;
+      
       // Add small delay to allow switch animation to complete
       const timer = setTimeout(() => {
         fetchPrecipData();
@@ -496,7 +563,14 @@ export default function Home() {
       
       return () => clearTimeout(timer);
     }
-  }, [period, timeIndex, viewMode]);
+  }, [period, timeIndex]);  // Removed viewMode - only fetch when data changes
+  
+  // Regenerate PNG when viewMode changes (without re-fetching)
+  useEffect(() => {
+    if (viewMode === 'png' && precipData) {
+      generatePNG(precipData).then(setPngImage);
+    }
+  }, [viewMode, precipData]);
 
   // Pre-cache data for animation range (using binary for speed)
   const cacheAnimationData = async () => {
@@ -545,10 +619,9 @@ export default function Home() {
     
     let currentFrame = animationFrom;
     const localCache = { ...dataCache }; // Local copy to avoid state sync issues
-    const ANIMATION_SUBSAMPLE = 2; // Use lower resolution for smoother animation (4x less data)
     const PREFETCH_COUNT = 3; // Number of frames to prefetch ahead
     
-    // Prefetch next frames in parallel
+    // Prefetch next frames in parallel (uses default subsample=2 to match backend cache)
     const prefetchFrames = (fromFrame) => {
       const promises = [];
       for (let i = 1; i <= PREFETCH_COUNT; i++) {
@@ -557,7 +630,7 @@ export default function Home() {
         const cacheKey = `${period}_${nextFrame}_anim`;
         if (!localCache[cacheKey]) {
           promises.push(
-            fetchBinaryPrecipData(period, nextFrame, ANIMATION_SUBSAMPLE)
+            fetchBinaryPrecipData(period, nextFrame)
               .then(data => {
                 localCache[cacheKey] = data;
               })
@@ -575,10 +648,10 @@ export default function Home() {
       const cacheKey = `${period}_${currentFrame}_anim`;
       let frameData = localCache[cacheKey];
       
-      // Fetch on-demand if not cached (with lower resolution for speed)
+      // Fetch on-demand if not cached (uses default subsample=2 to match backend cache)
       if (!frameData) {
         try {
-          frameData = await fetchBinaryPrecipData(period, currentFrame, ANIMATION_SUBSAMPLE);
+          frameData = await fetchBinaryPrecipData(period, currentFrame);
           localCache[cacheKey] = frameData;
         } catch (error) {
           console.error(`Error fetching frame ${currentFrame}:`, error);
@@ -718,19 +791,6 @@ export default function Home() {
               {loading && <span style={{ marginLeft: '10px', color: '#666' }}>Loading...</span>}
             </div>
             
-            {/* Stats */}
-            {precipData && precipData.stats && (
-              <div style={{ marginTop: '10px', fontSize: '12px' }}>
-                <p>Min: {precipData.stats.min?.toFixed(2) ?? 'N/A'} mm</p>
-                <p>Max: {precipData.stats.max?.toFixed(2) ?? 'N/A'} mm</p>
-                <p>Mean: {precipData.stats.mean?.toFixed(2) ?? 'N/A'} mm</p>
-                {precipData.stats.actualMax && (
-                  <p style={{ fontSize: '11px', color: '#666' }}>
-                    Actual: {precipData.stats.actualMin?.toFixed(1)} - {precipData.stats.actualMax?.toFixed(1)} mm
-                  </p>
-                )}
-              </div>
-            )}
           </section>
         </div>
 
