@@ -492,5 +492,119 @@ def clear_cache():
     print("🗑️ All caches cleared")
     return jsonify({'status': 'cleared'})
 
+
+@app.route('/api/precipitation/aggregated/binary', methods=['GET'])
+def get_aggregated_precipitation_binary():
+    """
+    Get aggregated precipitation data (average over multiple time steps).
+    Used for 10-day and monthly views.
+    """
+    try:
+        request_start = time_module.time()
+        
+        # Get parameters
+        period = request.args.get('period', '202512')
+        start_time = int(request.args.get('start_time', 0))
+        end_time = int(request.args.get('end_time', 0))
+        subsample = int(request.args.get('subsample', 2))
+        
+        # Validate period
+        if period not in AVAILABLE_PERIODS:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        
+        # Ensure end_time >= start_time
+        if end_time < start_time:
+            end_time = start_time
+        
+        print(f"📊 Aggregating {period}: time {start_time} to {end_time}...")
+        
+        # Fetch all required time steps and aggregate
+        aggregated_values = None
+        count = 0
+        
+        for t in range(start_time, end_time + 1):
+            cached = get_cached_precip_data(period, t, subsample)
+            values = cached['values'].copy()
+            
+            # Convert invalid values to NaN for proper averaging
+            values = np.where(values == -999, np.nan, values)
+            
+            if aggregated_values is None:
+                aggregated_values = values
+                lats = cached['lats']
+                lons = cached['lons']
+                bounds = cached['bounds']
+                total_times = cached['total_times']
+            else:
+                # Use nanmean logic - stack and average
+                aggregated_values = np.nansum([aggregated_values, values], axis=0)
+            
+            count += 1
+        
+        # Calculate average
+        if count > 1:
+            # For nanmean, we need to count valid values
+            valid_counts = None
+            for t in range(start_time, end_time + 1):
+                cached = get_cached_precip_data(period, t, subsample)
+                values = cached['values'].copy()
+                valid_mask = (values != -999).astype(np.float32)
+                if valid_counts is None:
+                    valid_counts = valid_mask
+                else:
+                    valid_counts += valid_mask
+            
+            # Avoid division by zero
+            valid_counts = np.where(valid_counts == 0, 1, valid_counts)
+            aggregated_values = aggregated_values / valid_counts
+        
+        # Replace NaN back to -999
+        aggregated_values = np.nan_to_num(aggregated_values, nan=-999).astype(np.float32)
+        
+        # Apply land mask
+        land_mask = get_land_mask(subsample)
+        if land_mask is not None and land_mask.shape == aggregated_values.shape:
+            aggregated_values = np.where(land_mask, aggregated_values, -999).astype(np.float32)
+        
+        # Calculate stats for aggregated data
+        valid_values = aggregated_values[aggregated_values != -999]
+        stats = (
+            0.0,  # min (fixed scale)
+            100.0,  # max (fixed scale)
+            float(np.mean(valid_values)) if len(valid_values) > 0 else 0.0,
+            float(np.min(valid_values)) if len(valid_values) > 0 else 0.0,
+            float(np.max(valid_values)) if len(valid_values) > 0 else 0.0
+        )
+        
+        # Build binary response
+        lat_count = len(lats)
+        lon_count = len(lons)
+        
+        # Pack header (13 values)
+        header = struct.pack('<4i9f',
+            lat_count, lon_count, start_time, total_times,
+            bounds[0], bounds[1], bounds[2], bounds[3],  # minLat, maxLat, minLon, maxLon
+            stats[0], stats[1], stats[2], stats[3], stats[4]  # min, max, mean, actualMin, actualMax
+        )
+        
+        # Pack arrays as bytes
+        lat_bytes = lats.tobytes()
+        lon_bytes = lons.tobytes()
+        values_bytes = aggregated_values.tobytes()
+        
+        # Combine all
+        binary_data = header + lat_bytes + lon_bytes + values_bytes
+        
+        elapsed = time_module.time() - request_start
+        print(f"📦 Aggregated binary ({count} steps): {len(binary_data)/1024:.1f}KB in {elapsed*1000:.0f}ms")
+        
+        return Response(binary_data, mimetype='application/octet-stream')
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

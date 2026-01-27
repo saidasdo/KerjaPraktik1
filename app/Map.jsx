@@ -6,13 +6,17 @@ import PrecipitationLayerWebGL from './PrecipitationLayerWebGL';
 
 // Color legend component
 function ColorLegend({ stats }) {
-  const colors = [
-    '#FFFFCC', '#C7E9B4', '#7FCDBB', '#41B6C4', 
-    '#1D91C0', '#225EA8', '#0C2C84'
+  const colorStops = [
+    { range: '>500', color: '#00460C' },
+    { range: '400-500', color: '#369135' },
+    { range: '300-400', color: '#8AD58B' },
+    { range: '200-300', color: '#E0FD68' },
+    { range: '150-200', color: '#EBE100' },
+    { range: '100-150', color: '#EFA700' },
+    { range: '50-100', color: '#DC6200' },
+    { range: '20-50', color: '#8E2800' },
+    { range: '0-20', color: '#340A00' }
   ];
-  
-  const minVal = stats?.min ?? 0;
-  const maxVal = stats?.max ?? 100;
   
   return (
     <div style={{
@@ -24,25 +28,23 @@ function ColorLegend({ stats }) {
       borderRadius: '5px',
       boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
       zIndex: 1000,
-      fontSize: '12px'
+      fontSize: '11px'
     }}>
-      <div style={{ fontWeight: 'bold', marginBottom: '5px' }}>
+      <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '12px' }}>
         Precipitation (mm)
       </div>
-      <div style={{ display: 'flex', alignItems: 'center' }}>
-        <div style={{ 
-          width: '20px', 
-          height: '120px',
-          background: `linear-gradient(to bottom, ${colors.slice().reverse().join(', ')})`,
-          marginRight: '8px',
-          border: '1px solid #ccc'
-        }} />
-        <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '120px' }}>
-          <span>{maxVal.toFixed(1)}</span>
-          <span>{((maxVal + minVal) / 2).toFixed(1)}</span>
-          <span>{minVal.toFixed(1)}</span>
+      {colorStops.map((stop, idx) => (
+        <div key={idx} style={{ display: 'flex', alignItems: 'center', marginBottom: '3px' }}>
+          <div style={{
+            width: '20px',
+            height: '16px',
+            backgroundColor: stop.color,
+            marginRight: '8px',
+            border: '1px solid #999'
+          }} />
+          <span>{stop.range}</span>
         </div>
-      </div>
+      ))}
     </div>
   );
 }
@@ -148,7 +150,7 @@ export default function Map({ precipData }) {
     const L = require('leaflet');
     const map = mapInstanceRef.current;
 
-    const handleClick = (e) => {
+    const handleClick = async (e) => {
       const { lat, lng } = e.latlng;
       const precip = getPrecipitationAt(lat, lng);
 
@@ -157,31 +159,46 @@ export default function Map({ precipData }) {
         map.removeLayer(markerRef.current);
       }
 
+      // Fetch location name using reverse geocoding
+      let locationName = 'Loading...';
+      let locationDetails = { city: '', province: '', country: '' };
+      
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
+          {
+            headers: {
+              'User-Agent': 'PrecipitationMap/1.0'
+            }
+          }
+        );
+        const data = await response.json();
+        
+        if (data && data.address) {
+          const addr = data.address;
+          locationDetails.city = addr.city || addr.town || addr.village || addr.municipality || '';
+          locationDetails.province = addr.state || addr.province || '';
+          locationDetails.country = addr.country || '';
+          
+          // Build location name
+          const parts = [locationDetails.city, locationDetails.province, locationDetails.country].filter(Boolean);
+          locationName = parts.join(', ') || 'Unknown location';
+        } else {
+          locationName = 'Unknown location';
+        }
+      } catch (error) {
+        console.error('Error fetching location:', error);
+        locationName = 'Location unavailable';
+      }
+
       if (precip !== null) {
-        // Get data range for context
-        const { values } = precipData;
-        const allValues = values.flat().filter(v => v !== -999 && v >= 0);
-        allValues.sort((a, b) => a - b);
-        const p99 = allValues[Math.floor(allValues.length * 0.99)] || Math.max(...allValues);
-        
-        // Calculate color position (same as WebGL shader)
-        const normalized01 = Math.min(1, precip / p99);
-        const gammaCorrected = Math.sqrt(normalized01); // Square root for better distribution
-        const colorPercent = (gammaCorrected * 100).toFixed(0);
-        
-        // Determine color range description
-        let colorDesc = '';
-        if (gammaCorrected < 0.167) colorDesc = 'Yellow (Low)';
-        else if (gammaCorrected < 0.333) colorDesc = 'Lime-Green';
-        else if (gammaCorrected < 0.5) colorDesc = 'Green';
-        else if (gammaCorrected < 0.667) colorDesc = 'Cyan';
-        else if (gammaCorrected < 0.833) colorDesc = 'Blue';
-        else colorDesc = 'Dark Blue (High)';
-        
-        // Create popup content
+        // Create popup content with location
         const popupContent = `
           <div style="font-size: 13px;">
             <strong>Location:</strong><br/>
+            ${locationName}<br/>
+            <br/>
+            <strong>Coordinates:</strong><br/>
             Lat: ${lat.toFixed(4)}°<br/>
             Lon: ${lng.toFixed(4)}°<br/>
             <br/>
@@ -206,12 +223,15 @@ export default function Map({ precipData }) {
           precip: precip.toFixed(2)
         });
       } else {
-        // Show "no data" popup
+        // Show "no data" popup with location
         const marker = L.marker([lat, lng])
           .addTo(map)
           .bindPopup(`
             <div style="font-size: 13px;">
               <strong>Location:</strong><br/>
+              ${locationName}<br/>
+              <br/>
+              <strong>Coordinates:</strong><br/>
               Lat: ${lat.toFixed(4)}°<br/>
               Lon: ${lng.toFixed(4)}°<br/>
               <br/>

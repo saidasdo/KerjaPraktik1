@@ -22,30 +22,34 @@ const FRAGMENT_SHADER = `
   uniform vec2 u_dataSize;
   uniform float u_opacity;
   
-  // Vibrant YlGnBu colormap - brighter colors
+  // Solid color bands based on precipitation ranges (mm)
   vec3 colormap(float t) {
     // Clamp t to 0-1
     t = clamp(t, 0.0, 1.0);
     
-    // Define color stops - more vibrant/saturated colors
-    if (t < 0.167) {
-      float f = t / 0.167;
-      return mix(vec3(1.0, 1.0, 0.6), vec3(0.7, 0.95, 0.4), f);  // Bright yellow to lime
-    } else if (t < 0.333) {
-      float f = (t - 0.167) / 0.166;
-      return mix(vec3(0.7, 0.95, 0.4), vec3(0.2, 0.9, 0.5), f);  // Lime to bright green
-    } else if (t < 0.5) {
-      float f = (t - 0.333) / 0.167;
-      return mix(vec3(0.2, 0.9, 0.5), vec3(0.0, 0.85, 0.75), f); // Green to cyan
-    } else if (t < 0.667) {
-      float f = (t - 0.5) / 0.167;
-      return mix(vec3(0.0, 0.85, 0.75), vec3(0.0, 0.6, 0.9), f); // Cyan to bright blue
-    } else if (t < 0.833) {
-      float f = (t - 0.667) / 0.166;
-      return mix(vec3(0.0, 0.6, 0.9), vec3(0.1, 0.3, 0.85), f);  // Bright blue to royal blue
+    // Map normalized value back to precipitation amount (0-500+ mm scale)
+    // Assuming max value of 500mm for the upper bound
+    float precip = t * 500.0;
+    
+    // Solid color bands
+    if (precip < 20.0) {
+      return vec3(0.204, 0.039, 0.0);     // #340A00 - 0-20mm
+    } else if (precip < 50.0) {
+      return vec3(0.557, 0.157, 0.0);     // #8E2800 - 20-50mm
+    } else if (precip < 100.0) {
+      return vec3(0.863, 0.384, 0.0);     // #DC6200 - 50-100mm
+    } else if (precip < 150.0) {
+      return vec3(0.937, 0.655, 0.0);     // #EFA700 - 100-150mm
+    } else if (precip < 200.0) {
+      return vec3(0.922, 0.882, 0.0);     // #EBE100 - 150-200mm
+    } else if (precip < 300.0) {
+      return vec3(0.878, 0.992, 0.408);   // #E0FD68 - 200-300mm
+    } else if (precip < 400.0) {
+      return vec3(0.541, 0.835, 0.545);   // #8AD58B - 300-400mm
+    } else if (precip < 500.0) {
+      return vec3(0.212, 0.569, 0.208);   // #369135 - 400-500mm
     } else {
-      float f = (t - 0.833) / 0.167;
-      return mix(vec3(0.1, 0.3, 0.85), vec3(0.15, 0.1, 0.7), f); // Royal blue to deep purple-blue
+      return vec3(0.0, 0.275, 0.047);     // #00460C - >500mm
     }
   }
   
