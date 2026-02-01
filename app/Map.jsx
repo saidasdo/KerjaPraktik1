@@ -3,6 +3,28 @@
 import { useEffect, useRef, useState } from 'react';
 import 'leaflet/dist/leaflet.css';
 import PrecipitationLayerWebGL from './PrecipitationLayerWebGL';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+
+// Register Chart.js components
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 // Color legend component
 function ColorLegend({ stats }) {
@@ -54,7 +76,17 @@ export default function Map({ precipData }) {
   const mapInstanceRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
   const [clickInfo, setClickInfo] = useState(null);
+  const [sideWindow, setSideWindow] = useState({ visible: false, data: null, loading: false });
+  const [selectedPeriod, setSelectedPeriod] = useState('202508');
   const markerRef = useRef(null);
+
+  // Available periods for time series
+  const availablePeriods = [
+    { value: '202508', label: 'August 2025' },
+    { value: '202412', label: 'December 2024' },
+    { value: '202501', label: 'January 2025' },
+    { value: '202601', label: 'January 2026' }
+  ];
 
   // Function to get precipitation value at lat/lon
   const getPrecipitationAt = (lat, lon) => {
@@ -94,6 +126,41 @@ export default function Map({ precipData }) {
     }
 
     return value;
+  };
+
+  // Function to refresh time series data for the current location
+  const refreshTimeSeriesData = async (period) => {
+    if (!sideWindow.data) return;
+    
+    setSideWindow(prev => ({ ...prev, loading: true }));
+    
+    const { lat, lng } = sideWindow.data;
+    try {
+      const timeSeriesResponse = await fetch(
+        `http://localhost:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}`
+      );
+      if (timeSeriesResponse.ok) {
+        const timeSeriesData = await timeSeriesResponse.json();
+        setSideWindow(prev => ({
+          ...prev,
+          loading: false,
+          data: { ...prev.data, timeSeriesData }
+        }));
+      } else {
+        setSideWindow(prev => ({
+          ...prev,
+          loading: false,
+          data: { ...prev.data, timeSeriesData: null }
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching time series:', error);
+      setSideWindow(prev => ({
+        ...prev,
+        loading: false,
+        data: { ...prev.data, timeSeriesData: null }
+      }));
+    }
   };
 
   useEffect(() => {
@@ -159,6 +226,9 @@ export default function Map({ precipData }) {
         map.removeLayer(markerRef.current);
       }
 
+      // Set loading state for side window
+      setSideWindow({ visible: true, data: null, loading: true });
+
       // Fetch location name using reverse geocoding
       let locationName = 'Loading...';
       let locationDetails = { city: '', province: '', country: '' };
@@ -191,58 +261,43 @@ export default function Map({ precipData }) {
         locationName = 'Location unavailable';
       }
 
-      if (precip !== null) {
-        // Create popup content with location
-        const popupContent = `
-          <div style="font-size: 13px;">
-            <strong>Location:</strong><br/>
-            ${locationName}<br/>
-            <br/>
-            <strong>Coordinates:</strong><br/>
-            Lat: ${lat.toFixed(4)}°<br/>
-            Lon: ${lng.toFixed(4)}°<br/>
-            <br/>
-            <strong>Precipitation:</strong><br/>
-            ${precip.toFixed(2)} mm/day<br/>
-            <br/>
-          </div>
-        `;
-
-        // Create marker with popup
-        const marker = L.marker([lat, lng])
-          .addTo(map)
-          .bindPopup(popupContent)
-          .openPopup();
-
-        markerRef.current = marker;
-
-        // Update state for info box
-        setClickInfo({
-          lat: lat.toFixed(4),
-          lon: lng.toFixed(4),
-          precip: precip.toFixed(2)
-        });
-      } else {
-        // Show "no data" popup with location
-        const marker = L.marker([lat, lng])
-          .addTo(map)
-          .bindPopup(`
-            <div style="font-size: 13px;">
-              <strong>Location:</strong><br/>
-              ${locationName}<br/>
-              <br/>
-              <strong>Coordinates:</strong><br/>
-              Lat: ${lat.toFixed(4)}°<br/>
-              Lon: ${lng.toFixed(4)}°<br/>
-              <br/>
-              <em>No precipitation data</em>
-            </div>
-          `)
-          .openPopup();
-
-        markerRef.current = marker;
-        setClickInfo(null);
+      // Fetch time series data
+      let timeSeriesData = null;
+      try {
+        const timeSeriesResponse = await fetch(
+          `http://localhost:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${selectedPeriod}`
+        );
+        if (timeSeriesResponse.ok) {
+          timeSeriesData = await timeSeriesResponse.json();
+        }
+      } catch (error) {
+        console.error('Error fetching time series:', error);
       }
+
+      // Add marker
+      const marker = L.marker([lat, lng]).addTo(map);
+      markerRef.current = marker;
+
+      // Update side window with all data
+      setSideWindow({
+        visible: true,
+        loading: false,
+        data: {
+          lat: lat.toFixed(4),
+          lng: lng.toFixed(4),
+          locationName,
+          locationDetails,
+          currentPrecip: precip ? precip.toFixed(2) : null,
+          timeSeriesData
+        }
+      });
+
+      // Update state for backward compatibility
+      setClickInfo({
+        lat: lat.toFixed(4),
+        lon: lng.toFixed(4),
+        precip: precip ? precip.toFixed(2) : null
+      });
     };
 
     map.on('click', handleClick);
@@ -255,6 +310,258 @@ export default function Map({ precipData }) {
       }
     };
   }, [precipData]);
+
+  // Side Window Component
+  const SideWindow = () => {
+    if (!sideWindow.visible) return null;
+
+    return (
+      <div style={{
+        position: 'fixed',
+        top: '0',
+        right: '0',
+        width: '400px',
+        height: '100vh',
+        background: 'white',
+        boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
+        zIndex: 2000,
+        padding: '20px',
+        overflowY: 'auto',
+        fontFamily: 'Arial, sans-serif'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>Location Details</h2>
+          <button 
+            onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
+            style={{
+              background: '#f44336',
+              color: 'white',
+              border: 'none',
+              borderRadius: '3px',
+              padding: '5px 10px',
+              cursor: 'pointer',
+              fontSize: '12px'
+            }}
+          >
+            Close
+          </button>
+        </div>
+
+        {sideWindow.loading ? (
+          <div style={{ textAlign: 'center', padding: '40px' }}>
+            <div>Loading location data...</div>
+          </div>
+        ) : sideWindow.data ? (
+          <div>
+            {/* Basic Information */}
+            <div style={{ marginBottom: '25px', padding: '15px', background: '#f8f9fa', borderRadius: '5px' }}>
+              <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#2c3e50' }}>Basic Information</h3>
+              <div style={{ fontSize: '14px', lineHeight: '1.6' }}>
+                <strong>Location:</strong><br/>
+                {sideWindow.data.locationName}<br/><br/>
+                <strong>Coordinates:</strong><br/>
+                Latitude: {sideWindow.data.lat}°<br/>
+                Longitude: {sideWindow.data.lng}°<br/><br/>
+                {sideWindow.data.currentPrecip && (
+                  <>
+                    <strong>Current Precipitation:</strong><br/>
+                    {sideWindow.data.currentPrecip} mm/day<br/>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Time Series Data */}
+            {sideWindow.data.timeSeriesData ? (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>Time Series Data</h3>
+                  <select 
+                    value={selectedPeriod}
+                    onChange={(e) => {
+                      setSelectedPeriod(e.target.value);
+                      refreshTimeSeriesData(e.target.value);
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '12px',
+                      border: '1px solid #ccc',
+                      borderRadius: '3px',
+                      background: 'white'
+                    }}
+                  >
+                    {availablePeriods.map(period => (
+                      <option key={period.value} value={period.value}>
+                        {period.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                {/* Statistics */}
+                <div style={{ marginBottom: '20px', padding: '10px', background: '#e8f4fd', borderRadius: '5px' }}>
+                  <h4 style={{ margin: '0 0 8px 0', fontSize: '14px' }}>Statistics</h4>
+                  <div style={{ fontSize: '13px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                    <div>Min: {sideWindow.data.timeSeriesData.statistics.min} mm</div>
+                    <div>Max: {sideWindow.data.timeSeriesData.statistics.max} mm</div>
+                    <div>Mean: {sideWindow.data.timeSeriesData.statistics.mean} mm</div>
+                    <div>Days: {sideWindow.data.timeSeriesData.statistics.total_days}</div>
+                  </div>
+                </div>
+
+                {/* Time Series Chart */}
+                <div style={{ height: '400px', border: '1px solid #ddd', borderRadius: '5px', padding: '10px', background: '#fafafa' }}>
+                  {sideWindow.data.timeSeriesData.time_series.length > 0 ? (
+                    <Line
+                      data={{
+                        labels: sideWindow.data.timeSeriesData.time_series.map(item => {
+                          // Format date for better display (show month-day)
+                          const date = new Date(item.date);
+                          return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                        }),
+                        datasets: [
+                          {
+                            label: 'Daily Precipitation (mm)',
+                            data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation),
+                            borderColor: '#2196F3',
+                            backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4,
+                            pointBackgroundColor: function(context) {
+                              const value = context.parsed.y;
+                              if (value > 10) return '#4CAF50';
+                              if (value > 5) return '#FF9800';
+                              return '#2196F3';
+                            },
+                            pointBorderColor: function(context) {
+                              const value = context.parsed.y;
+                              if (value > 10) return '#4CAF50';
+                              if (value > 5) return '#FF9800';
+                              return '#2196F3';
+                            },
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                          }
+                        ]
+                      }}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                          legend: {
+                            position: 'top',
+                            labels: {
+                              font: {
+                                size: 12
+                              }
+                            }
+                          },
+                          tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            backgroundColor: 'rgba(0,0,0,0.8)',
+                            titleColor: '#fff',
+                            bodyColor: '#fff',
+                            callbacks: {
+                              label: function(context) {
+                                return `${context.dataset.label}: ${context.parsed.y.toFixed(2)} mm`;
+                              }
+                            }
+                          }
+                        },
+                        scales: {
+                          x: {
+                            display: true,
+                            title: {
+                              display: true,
+                              text: 'Date',
+                              font: {
+                                size: 12,
+                                weight: 'bold'
+                              }
+                            },
+                            ticks: {
+                              maxTicksLimit: 10,
+                              font: {
+                                size: 10
+                              }
+                            }
+                          },
+                          y: {
+                            display: true,
+                            title: {
+                              display: true,
+                              text: 'Precipitation (mm)',
+                              font: {
+                                size: 12,
+                                weight: 'bold'
+                              }
+                            },
+                            beginAtZero: true,
+                            ticks: {
+                              font: {
+                                size: 10
+                              }
+                            },
+                            grid: {
+                              color: 'rgba(200, 200, 200, 0.3)'
+                            }
+                          }
+                        },
+                        interaction: {
+                          mode: 'nearest',
+                          axis: 'x',
+                          intersect: false
+                        }
+                      }}
+                    />
+                  ) : (
+                    <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '14px' }}>
+                      No precipitation data available for this location and period
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>Time Series Data</h3>
+                  <select 
+                    value={selectedPeriod}
+                    onChange={(e) => {
+                      setSelectedPeriod(e.target.value);
+                      refreshTimeSeriesData(e.target.value);
+                    }}
+                    style={{
+                      padding: '4px 8px',
+                      fontSize: '12px',
+                      border: '1px solid #ccc',
+                      borderRadius: '3px',
+                      background: 'white'
+                    }}
+                  >
+                    {availablePeriods.map(period => (
+                      <option key={period.value} value={period.value}>
+                        {period.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+                  No time series data available for this location
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ padding: '20px', textAlign: 'center', color: '#666' }}>
+            Failed to load location data
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={{ position: 'relative' }}>
@@ -272,6 +579,7 @@ export default function Map({ precipData }) {
           <ColorLegend stats={precipData.stats} />
         </>
       )}
+      <SideWindow />
     </div>
   );
 }

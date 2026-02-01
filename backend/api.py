@@ -606,5 +606,87 @@ def get_aggregated_precipitation_binary():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/timeseries', methods=['GET'])
+def get_timeseries():
+    """Get precipitation time series for a specific lat/lon point"""
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+        period = request.args.get('period', '202601')  # Default to latest period
+        
+        if period not in AVAILABLE_PERIODS:
+            return jsonify({'error': f'Period {period} not available'}), 400
+        
+        # Get dataset
+        ds = get_dataset(period)
+        
+        # Get lat/lon arrays
+        lats = ds['lat'].values
+        lons = ds['lon'].values
+        
+        # Find nearest grid point
+        lat_idx = np.argmin(np.abs(lats - lat))
+        lon_idx = np.argmin(np.abs(lons - lon))
+        
+        # Get actual grid coordinates
+        actual_lat = float(lats[lat_idx])
+        actual_lon = float(lons[lon_idx])
+        
+        # Extract time series for this grid point
+        pr_data = ds['pr'].isel(lat=lat_idx, lon=lon_idx)
+        
+        # Get time values
+        times = ds['time'].values
+        
+        # Convert to lists for JSON serialization
+        time_series = []
+        for i, time_val in enumerate(times):
+            precip_val = float(pr_data.isel(time=i).values)
+            
+            # Skip invalid values
+            if precip_val < -1e30 or precip_val < 0:
+                continue
+                
+            # Convert numpy datetime64 to ISO string
+            time_str = str(time_val)[:10]  # Get YYYY-MM-DD format
+            
+            time_series.append({
+                'date': time_str,
+                'precipitation': round(precip_val, 2)
+            })
+        
+        # Calculate basic statistics
+        valid_values = [item['precipitation'] for item in time_series]
+        if valid_values:
+            stats = {
+                'min': round(min(valid_values), 2),
+                'max': round(max(valid_values), 2),
+                'mean': round(np.mean(valid_values), 2),
+                'total_days': len(valid_values)
+            }
+        else:
+            stats = {
+                'min': 0,
+                'max': 0,
+                'mean': 0,
+                'total_days': 0
+            }
+        
+        return jsonify({
+            'requested_coords': {'lat': lat, 'lon': lon},
+            'actual_coords': {'lat': actual_lat, 'lon': actual_lon},
+            'period': period,
+            'time_series': time_series,
+            'statistics': stats
+        })
+        
+    except ValueError as e:
+        return jsonify({'error': 'Invalid lat/lon coordinates'}), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
