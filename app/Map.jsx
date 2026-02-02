@@ -79,6 +79,10 @@ export default function Map({ precipData }) {
   const [sideWindow, setSideWindow] = useState({ visible: false, data: null, loading: false });
   const [selectedPeriod, setSelectedPeriod] = useState('202508');
   const markerRef = useRef(null);
+  const [clickMode, setClickMode] = useState('point'); // 'point' or 'region'
+  const provinceLayerRef = useRef(null);
+  const selectedProvinceRef = useRef(null);
+  const indonesiaGeoJsonRef = useRef(null);
 
   // Available periods for time series
   const availablePeriods = [
@@ -178,6 +182,10 @@ export default function Map({ precipData }) {
 
     const map = L.map(mapRef.current).setView([-2.5, 118], 5);
 
+    // Create a custom pane for coastlines that sits ABOVE the overlay
+    map.createPane('coastlinePane');
+    map.getPane('coastlinePane').style.zIndex = 450;  // Above overlayPane (400) but below markerPane (600)
+    map.getPane('coastlinePane').style.pointerEvents = 'none';  // Allow clicks through
 
     L.tileLayer(
       'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png',
@@ -197,6 +205,67 @@ export default function Map({ precipData }) {
       maxZoom: 18  // Hide when zooming in beyond zoom 6
     }).addTo(map);
 
+    // Load Indonesia boundaries only (provinces + coastline)
+    // This gives us VECTOR lines with fixed stroke width regardless of zoom
+    const loadIndonesiaBorders = async () => {
+      try {
+        // Load Indonesia provinces GeoJSON (includes coastlines and province boundaries)
+        const response = await fetch('https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia.geojson');
+        const geojson = await response.json();
+        
+        // Store GeoJSON for later use
+        indonesiaGeoJsonRef.current = geojson;
+        
+        // Add Indonesia provinces with fixed styling (border only layer - always visible)
+        L.geoJSON(geojson, {
+          pane: 'coastlinePane',
+          style: {
+            color: '#000000',      // Black color for borders
+            weight: 1.5,           // Fixed 1.5px width - consistent at all zoom levels
+            opacity: 1,            // Full opacity for clear visibility
+            fill: false            // No fill, just borders
+          }
+        }).addTo(map);
+        
+        console.log('✅ Indonesia borders loaded');
+      } catch (error) {
+        console.error('Failed to load Indonesia borders:', error);
+        // Fallback: try loading just Indonesia from world countries
+        try {
+          const fallbackResponse = await fetch('https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson');
+          const worldGeojson = await fallbackResponse.json();
+          
+          // Filter to only Indonesia
+          const indonesiaOnly = {
+            type: 'FeatureCollection',
+            features: worldGeojson.features.filter(f => 
+              f.properties.ADMIN === 'Indonesia' || 
+              f.properties.ISO_A3 === 'IDN' ||
+              f.properties.name === 'Indonesia'
+            )
+          };
+          
+          indonesiaGeoJsonRef.current = indonesiaOnly;
+          
+          L.geoJSON(indonesiaOnly, {
+            pane: 'coastlinePane',
+            style: {
+              color: '#000000',
+              weight: 1.5,
+              opacity: 1,
+              fill: false
+            }
+          }).addTo(map);
+          
+          console.log('✅ Indonesia borders loaded (fallback)');
+        } catch (fallbackError) {
+          console.error('All border loading failed:', fallbackError);
+        }
+      }
+    };
+    
+    loadIndonesiaBorders();
+
     // CartoDB light without labels - shown when zoomed in (province level)
 
     mapInstanceRef.current = map;
@@ -210,7 +279,148 @@ export default function Map({ precipData }) {
     };
   }, []);
 
-  // Add click handler when map and data are ready
+  // Create/update clickable province layer when mode changes
+  useEffect(() => {
+    if (!mapInstanceRef.current || !indonesiaGeoJsonRef.current) return;
+    
+    const L = require('leaflet');
+    const map = mapInstanceRef.current;
+    
+    // Remove existing province layer if any
+    if (provinceLayerRef.current) {
+      map.removeLayer(provinceLayerRef.current);
+      provinceLayerRef.current = null;
+    }
+    
+    // Remove selected province highlight
+    if (selectedProvinceRef.current) {
+      map.removeLayer(selectedProvinceRef.current);
+      selectedProvinceRef.current = null;
+    }
+    
+    // Only create clickable layer in region mode
+    if (clickMode === 'region') {
+      const geojson = indonesiaGeoJsonRef.current;
+      
+      provinceLayerRef.current = L.geoJSON(geojson, {
+        style: {
+          color: '#3388ff',
+          weight: 2,
+          opacity: 0.6,
+          fillColor: '#3388ff',
+          fillOpacity: 0.1
+        },
+        onEachFeature: (feature, layer) => {
+          // Get province name from properties
+          const provinceName = feature.properties.state || 
+                               feature.properties.name || 
+                               feature.properties.NAME_1 ||
+                               feature.properties.PROVINSI ||
+                               'Unknown Province';
+          
+          // Hover effects
+          layer.on('mouseover', function() {
+            this.setStyle({
+              fillOpacity: 0.3,
+              weight: 3
+            });
+          });
+          
+          layer.on('mouseout', function() {
+            this.setStyle({
+              fillOpacity: 0.1,
+              weight: 2
+            });
+          });
+          
+          // Click handler for province
+          layer.on('click', async function(e) {
+            L.DomEvent.stopPropagation(e);
+            
+            // Remove old marker if exists
+            if (markerRef.current) {
+              map.removeLayer(markerRef.current);
+              markerRef.current = null;
+            }
+            
+            // Remove old selected province highlight
+            if (selectedProvinceRef.current) {
+              map.removeLayer(selectedProvinceRef.current);
+            }
+            
+            // Highlight selected province
+            selectedProvinceRef.current = L.geoJSON(feature, {
+              style: {
+                color: '#ff7800',
+                weight: 3,
+                opacity: 1,
+                fillColor: '#ff7800',
+                fillOpacity: 0.3
+              }
+            }).addTo(map);
+            
+            // Set loading state
+            setSideWindow({ visible: true, data: null, loading: true });
+            
+            // Fetch regional time series
+            try {
+              const response = await fetch('http://localhost:5000/api/timeseries/region', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  geometry: feature.geometry,
+                  province_name: provinceName,
+                  period: selectedPeriod,
+                  mode: 'day'
+                })
+              });
+              
+              if (response.ok) {
+                const regionData = await response.json();
+                
+                setSideWindow({
+                  visible: true,
+                  loading: false,
+                  data: {
+                    isRegion: true,
+                    provinceName: provinceName,
+                    numGridPoints: regionData.num_grid_points,
+                    timeSeriesData: regionData,
+                    processingTime: regionData.processing_time_seconds
+                  }
+                });
+              } else {
+                const error = await response.json();
+                setSideWindow({
+                  visible: true,
+                  loading: false,
+                  data: { error: error.error || 'Failed to fetch regional data' }
+                });
+              }
+            } catch (error) {
+              console.error('Error fetching regional data:', error);
+              setSideWindow({
+                visible: true,
+                loading: false,
+                data: { error: 'Network error fetching regional data' }
+              });
+            }
+          });
+        }
+      }).addTo(map);
+      
+      console.log('✅ Clickable province layer created');
+    }
+    
+    return () => {
+      if (provinceLayerRef.current) {
+        map.removeLayer(provinceLayerRef.current);
+        provinceLayerRef.current = null;
+      }
+    };
+  }, [clickMode, selectedPeriod]);
+
+  // Add click handler for POINT mode when map and data are ready
   useEffect(() => {
     if (!mapInstanceRef.current || !precipData) return;
 
@@ -218,12 +428,21 @@ export default function Map({ precipData }) {
     const map = mapInstanceRef.current;
 
     const handleClick = async (e) => {
+      // Only handle clicks in point mode
+      if (clickMode !== 'point') return;
+      
       const { lat, lng } = e.latlng;
       const precip = getPrecipitationAt(lat, lng);
 
       // Remove old marker if exists
       if (markerRef.current) {
         map.removeLayer(markerRef.current);
+      }
+      
+      // Remove selected province highlight if any
+      if (selectedProvinceRef.current) {
+        map.removeLayer(selectedProvinceRef.current);
+        selectedProvinceRef.current = null;
       }
 
       // Set loading state for side window
@@ -283,6 +502,7 @@ export default function Map({ precipData }) {
         visible: true,
         loading: false,
         data: {
+          isRegion: false,
           lat: lat.toFixed(4),
           lng: lng.toFixed(4),
           locationName,
@@ -309,11 +529,41 @@ export default function Map({ precipData }) {
         markerRef.current = null;
       }
     };
-  }, [precipData]);
+  }, [precipData, clickMode]);
 
   // Side Window Component
   const SideWindow = () => {
     if (!sideWindow.visible) return null;
+
+    // Handle error state
+    if (sideWindow.data?.error) {
+      return (
+        <div style={{
+          position: 'fixed',
+          top: '0',
+          right: '0',
+          width: '400px',
+          height: '100vh',
+          background: 'white',
+          boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
+          zIndex: 2000,
+          padding: '20px',
+          overflowY: 'auto',
+          fontFamily: 'Arial, sans-serif'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>Error</h2>
+            <button 
+              onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
+              style={{ background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px' }}
+            >Close</button>
+          </div>
+          <div style={{ color: '#f44336', padding: '20px', background: '#ffebee', borderRadius: '5px' }}>
+            {sideWindow.data.error}
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div style={{
@@ -330,7 +580,9 @@ export default function Map({ precipData }) {
         fontFamily: 'Arial, sans-serif'
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>Location Details</h2>
+          <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>
+            {sideWindow.data?.isRegion ? 'Regional Data' : 'Location Details'}
+          </h2>
           <button 
             onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
             style={{
@@ -349,33 +601,57 @@ export default function Map({ precipData }) {
 
         {sideWindow.loading ? (
           <div style={{ textAlign: 'center', padding: '40px' }}>
-            <div>Loading location data...</div>
+            <div>Loading {sideWindow.data?.isRegion ? 'regional' : 'location'} data...</div>
+            <div style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
+              {clickMode === 'region' && 'First request may take a few seconds...'}
+            </div>
           </div>
         ) : sideWindow.data ? (
           <div>
-            {/* Basic Information */}
-            <div style={{ marginBottom: '25px', padding: '15px', background: '#f8f9fa', borderRadius: '5px' }}>
-              <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#2c3e50' }}>Basic Information</h3>
+            {/* Basic Information - Different for Region vs Point */}
+            <div style={{ marginBottom: '25px', padding: '15px', background: sideWindow.data.isRegion ? '#fff3e0' : '#f8f9fa', borderRadius: '5px' }}>
+              <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#2c3e50' }}>
+                {sideWindow.data.isRegion ? '🗺️ Province Information' : 'Basic Information'}
+              </h3>
               <div style={{ fontSize: '14px', lineHeight: '1.6' }}>
-                <strong>Location:</strong><br/>
-                {sideWindow.data.locationName}<br/><br/>
-                <strong>Coordinates:</strong><br/>
-                Latitude: {sideWindow.data.lat}°<br/>
-                Longitude: {sideWindow.data.lng}°<br/><br/>
-                {sideWindow.data.currentPrecip && (
+                {sideWindow.data.isRegion ? (
                   <>
-                    <strong>Current Precipitation:</strong><br/>
-                    {sideWindow.data.currentPrecip} mm/day<br/>
+                    <strong>Province:</strong><br/>
+                    {sideWindow.data.provinceName}<br/><br/>
+                    <strong>Grid Points:</strong><br/>
+                    {sideWindow.data.numGridPoints} data points averaged<br/><br/>
+                    {sideWindow.data.processingTime && (
+                      <>
+                        <strong>Processing Time:</strong><br/>
+                        {sideWindow.data.processingTime}s<br/>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <strong>Location:</strong><br/>
+                    {sideWindow.data.locationName}<br/><br/>
+                    <strong>Coordinates:</strong><br/>
+                    Latitude: {sideWindow.data.lat}°<br/>
+                    Longitude: {sideWindow.data.lng}°<br/><br/>
+                    {sideWindow.data.currentPrecip && (
+                      <>
+                        <strong>Current Precipitation:</strong><br/>
+                        {sideWindow.data.currentPrecip} mm/day<br/>
+                      </>
+                    )}
                   </>
                 )}
               </div>
             </div>
 
             {/* Time Series Data */}
-            {sideWindow.data.timeSeriesData ? (
+            {(sideWindow.data.timeSeriesData) ? (
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                  <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>Time Series Data</h3>
+                  <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>
+                    {sideWindow.data.isRegion ? 'Regional Average Time Series' : 'Time Series Data'}
+                  </h3>
                   <select 
                     value={selectedPeriod}
                     onChange={(e) => {
@@ -399,13 +675,15 @@ export default function Map({ precipData }) {
                 </div>
                 
                 {/* Statistics */}
-                <div style={{ marginBottom: '20px', padding: '10px', background: '#e8f4fd', borderRadius: '5px' }}>
-                  <h4 style={{ margin: '0 0 8px 0', fontSize: '14px' }}>Statistics</h4>
+                <div style={{ marginBottom: '20px', padding: '10px', background: sideWindow.data.isRegion ? '#e3f2fd' : '#e8f4fd', borderRadius: '5px' }}>
+                  <h4 style={{ margin: '0 0 8px 0', fontSize: '14px' }}>
+                    {sideWindow.data.isRegion ? 'Regional Statistics' : 'Statistics'}
+                  </h4>
                   <div style={{ fontSize: '13px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                     <div>Min: {sideWindow.data.timeSeriesData.statistics.min} mm</div>
                     <div>Max: {sideWindow.data.timeSeriesData.statistics.max} mm</div>
                     <div>Mean: {sideWindow.data.timeSeriesData.statistics.mean} mm</div>
-                    <div>Days: {sideWindow.data.timeSeriesData.statistics.total_days}</div>
+                    <div>Days: {sideWindow.data.timeSeriesData.statistics.total_items || sideWindow.data.timeSeriesData.statistics.total_days}</div>
                   </div>
                 </div>
 
@@ -421,10 +699,10 @@ export default function Map({ precipData }) {
                         }),
                         datasets: [
                           {
-                            label: 'Daily Precipitation (mm)',
+                            label: sideWindow.data.isRegion ? 'Regional Avg Precipitation (mm)' : 'Daily Precipitation (mm)',
                             data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation),
-                            borderColor: '#2196F3',
-                            backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                            borderColor: sideWindow.data.isRegion ? '#ff7800' : '#2196F3',
+                            backgroundColor: sideWindow.data.isRegion ? 'rgba(255, 120, 0, 0.1)' : 'rgba(33, 150, 243, 0.1)',
                             borderWidth: 2,
                             fill: true,
                             tension: 0.4,
@@ -432,13 +710,13 @@ export default function Map({ precipData }) {
                               const value = context.parsed.y;
                               if (value > 10) return '#4CAF50';
                               if (value > 5) return '#FF9800';
-                              return '#2196F3';
+                              return sideWindow.data.isRegion ? '#ff7800' : '#2196F3';
                             },
                             pointBorderColor: function(context) {
                               const value = context.parsed.y;
                               if (value > 10) return '#4CAF50';
                               if (value > 5) return '#FF9800';
-                              return '#2196F3';
+                              return sideWindow.data.isRegion ? '#ff7800' : '#2196F3';
                             },
                             pointRadius: 4,
                             pointHoverRadius: 6
@@ -563,6 +841,55 @@ export default function Map({ precipData }) {
     );
   };
 
+  // Mode Toggle Component
+  const ModeToggle = () => (
+    <div style={{
+      position: 'absolute',
+      top: '10px',
+      left: '60px',
+      zIndex: 1000,
+      background: 'white',
+      borderRadius: '8px',
+      boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+      padding: '8px',
+      display: 'flex',
+      gap: '4px'
+    }}>
+      <button
+        onClick={() => setClickMode('point')}
+        style={{
+          padding: '8px 16px',
+          border: 'none',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          fontWeight: clickMode === 'point' ? 'bold' : 'normal',
+          background: clickMode === 'point' ? '#2196F3' : '#e0e0e0',
+          color: clickMode === 'point' ? 'white' : '#333',
+          fontSize: '13px',
+          transition: 'all 0.2s'
+        }}
+      >
+        📍 Point
+      </button>
+      <button
+        onClick={() => setClickMode('region')}
+        style={{
+          padding: '8px 16px',
+          border: 'none',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          fontWeight: clickMode === 'region' ? 'bold' : 'normal',
+          background: clickMode === 'region' ? '#ff7800' : '#e0e0e0',
+          color: clickMode === 'region' ? 'white' : '#333',
+          fontSize: '13px',
+          transition: 'all 0.2s'
+        }}
+      >
+        🗺️ Province
+      </button>
+    </div>
+  );
+
   return (
     <div style={{ position: 'relative' }}>
       <div 
@@ -577,6 +904,7 @@ export default function Map({ precipData }) {
             opacity={0.8}
           />
           <ColorLegend stats={precipData.stats} />
+          <ModeToggle />
         </>
       )}
       <SideWindow />
