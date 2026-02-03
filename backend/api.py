@@ -975,12 +975,68 @@ def get_timeseries():
         return jsonify({'error': str(e)}), 500
 
 
-# Cache for province masks (province_name -> boolean mask array)
-_province_mask_cache = {}
+@app.route('/api/zom/info', methods=['GET'])
+def get_zom_info():
+    """Get information about available ZOM (Zona Musim) data.
+    
+    Returns list of available climate zones with their properties.
+    """
+    try:
+        import json
+        import os
+        
+        # Path to ZOM GeoJSON file
+        zom_path = os.path.join(os.path.dirname(__file__), '..', 'public', 'zom.geojson')
+        
+        if not os.path.exists(zom_path):
+            return jsonify({'error': 'ZOM data file not found'}), 404
+        
+        with open(zom_path, 'r') as f:
+            zom_data = json.load(f)
+        
+        # Extract summary info
+        zones = []
+        provinces = set()
+        islands = set()
+        climate_types = set()
+        
+        for feature in zom_data.get('features', []):
+            props = feature.get('properties', {})
+            zones.append({
+                'zom_id': props.get('NOZOM_PROV') or props.get('NOZONA_LAM'),
+                'national_id': props.get('NOZOM_NAS'),
+                'province': props.get('PROV'),
+                'island': props.get('PULAU'),
+                'climate_type': props.get('TIPE_UMUM'),
+                'season_type': props.get('TIPE_MUSIM')
+            })
+            if props.get('PROV'):
+                provinces.add(props.get('PROV'))
+            if props.get('PULAU'):
+                islands.add(props.get('PULAU'))
+            if props.get('TIPE_UMUM'):
+                climate_types.add(props.get('TIPE_UMUM'))
+        
+        return jsonify({
+            'total_zones': len(zones),
+            'provinces': sorted(list(provinces)),
+            'islands': sorted(list(islands)),
+            'climate_types': sorted(list(climate_types)),
+            'zones': zones[:50]  # Return first 50 as sample
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+# Cache for ZOM/region masks (zom_name -> boolean mask array)
+_zom_mask_cache = {}
 
 @app.route('/api/timeseries/region', methods=['POST'])
 def get_region_timeseries():
-    """Get precipitation time series averaged over a region (province polygon).
+    """Get precipitation time series averaged over a region (ZOM polygon).
     
     Accepts POST request with GeoJSON polygon in the body.
     Returns regional average precipitation time series.
@@ -994,7 +1050,8 @@ def get_region_timeseries():
             return jsonify({'error': 'No JSON data provided'}), 400
         
         geometry = data.get('geometry')
-        province_name = data.get('province_name', 'Unknown')
+        # Support both old 'province_name' and new 'zom_name' keys
+        zom_name = data.get('zom_name') or data.get('province_name', 'Unknown')
         period = data.get('period', '202601')
         mode = data.get('mode', 'day')
         
@@ -1004,7 +1061,7 @@ def get_region_timeseries():
         if period not in AVAILABLE_PERIODS:
             return jsonify({'error': f'Period {period} not available'}), 400
         
-        print(f"🗺️ Processing region: {province_name}")
+        print(f"🗺️ Processing ZOM: {zom_name}")
         
         # Create Shapely polygon from GeoJSON
         try:
@@ -1024,15 +1081,15 @@ def get_region_timeseries():
         lats = ds['lat'].values
         lons = ds['lon'].values
         
-        # Check if we have a cached mask for this province
-        cache_key = f"{province_name}_{len(lats)}_{len(lons)}"
+        # Check if we have a cached mask for this ZOM
+        cache_key = f"{zom_name}_{len(lats)}_{len(lons)}"
         
-        if cache_key in _province_mask_cache:
-            region_mask = _province_mask_cache[cache_key]
-            print(f"✅ Using cached mask for {province_name}")
+        if cache_key in _zom_mask_cache:
+            region_mask = _zom_mask_cache[cache_key]
+            print(f"✅ Using cached mask for {zom_name}")
         else:
             # Create mask for points inside the polygon
-            print(f"🔍 Creating mask for {province_name}...")
+            print(f"🔍 Creating mask for {zom_name}...")
             t_mask_start = time_module.time()
             
             # Create mesh grid of coordinates
@@ -1059,15 +1116,15 @@ def get_region_timeseries():
             region_mask = region_mask.reshape(lat_grid.shape)
             
             # Cache the mask
-            _province_mask_cache[cache_key] = region_mask
+            _zom_mask_cache[cache_key] = region_mask
             
             mask_time = time_module.time() - t_mask_start
-            print(f"✅ Mask created for {province_name}: {np.sum(region_mask)} points in {mask_time:.1f}s")
+            print(f"✅ Mask created for {zom_name}: {np.sum(region_mask)} points in {mask_time:.1f}s")
         
         # Count points in region
         num_points = np.sum(region_mask)
         if num_points == 0:
-            return jsonify({'error': f'No data points found in region {province_name}'}), 400
+            return jsonify({'error': f'No data points found in ZOM {zom_name}'}), 400
         
         # Get time values and calculate total days
         times = ds['time'].values
@@ -1086,15 +1143,15 @@ def get_region_timeseries():
             
             if check_time < 0.1:
                 use_cache = True
-                print(f"✅ Region cache check: using CACHED data")
+                print(f"✅ ZOM cache check: using CACHED data")
             else:
-                print(f"⚠️ Region cache check: using DIRECT query ({check_time*1000:.0f}ms)")
+                print(f"⚠️ ZOM cache check: using DIRECT query ({check_time*1000:.0f}ms)")
         except:
-            print(f"⚠️ Region cache check failed: using DIRECT query")
+            print(f"⚠️ ZOM cache check failed: using DIRECT query")
         
         # Build time series by averaging over region for each day
         if use_cache:
-            print(f"📊 Calculating regional averages from CACHE for {total_days} days...")
+            print(f"📊 Calculating ZOM averages from CACHE for {total_days} days...")
             t_calc_start = time_module.time()
             
             daily_series = []
@@ -1201,8 +1258,6 @@ def get_region_timeseries():
                     'precipitation': round(avg_precip, 2),
                     'label': f"{month_key} ({len(month_days)} days)"
                 })
-            else:
-                time_series = []
         else:
             time_series = daily_series
         
@@ -1220,10 +1275,10 @@ def get_region_timeseries():
             stats = {'min': 0, 'max': 0, 'mean': 0, 'total_items': 0, 'mode': mode}
         
         elapsed = time_module.time() - t_start
-        print(f"✅ Regional time series for {province_name}: {len(time_series)} items in {elapsed:.1f}s")
+        print(f"✅ ZOM time series for {zom_name}: {len(time_series)} items in {elapsed:.1f}s")
         
         return jsonify({
-            'province_name': province_name,
+            'zom_name': zom_name,
             'num_grid_points': int(num_points),
             'period': period,
             'mode': mode,
@@ -1250,7 +1305,8 @@ def get_region_precipitation():
             return jsonify({'error': 'No JSON data provided'}), 400
         
         geometry = data.get('geometry')
-        province_name = data.get('province_name', 'Unknown')
+        # Support both old 'province_name' and new 'zom_name' keys
+        zom_name = data.get('zom_name') or data.get('province_name', 'Unknown')
         period = data.get('period', '202601')
         day_index = data.get('day_index', 0)
         
@@ -1271,10 +1327,10 @@ def get_region_precipitation():
         values = cached['values']
         
         # Check cache for mask
-        cache_key = f"{province_name}_{len(lats)}_{len(lons)}_subsample"
+        cache_key = f"{zom_name}_{len(lats)}_{len(lons)}_subsample"
         
-        if cache_key in _province_mask_cache:
-            region_mask = _province_mask_cache[cache_key]
+        if cache_key in _zom_mask_cache:
+            region_mask = _zom_mask_cache[cache_key]
         else:
             # Create mask
             lon_grid, lat_grid = np.meshgrid(lons, lats)
@@ -1291,7 +1347,7 @@ def get_region_precipitation():
                         region_mask[i] = True
             
             region_mask = region_mask.reshape(lat_grid.shape)
-            _province_mask_cache[cache_key] = region_mask
+            _zom_mask_cache[cache_key] = region_mask
         
         # Calculate regional average
         valid_mask = (values != -999) & region_mask
@@ -1301,7 +1357,7 @@ def get_region_precipitation():
             regional_avg = 0
         
         return jsonify({
-            'province_name': province_name,
+            'zom_name': zom_name,
             'precipitation': round(regional_avg, 2),
             'num_grid_points': int(np.sum(region_mask)),
             'period': period,
