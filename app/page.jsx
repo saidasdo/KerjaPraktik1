@@ -143,6 +143,162 @@ const formatTimeLong = (timeStr) => {
     return timeStr;
   }
 };
+
+// Format time range for 10-day periods
+const formatTimeRange = (startTimeStr, endTimeStr) => {
+  if (!startTimeStr) return '';
+  try {
+    const startDate = new Date(startTimeStr);
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const startDay = startDate.getDate();
+    const startMonth = monthNames[startDate.getMonth()];
+    const startYear = startDate.getFullYear();
+    
+    if (endTimeStr) {
+      const endDate = new Date(endTimeStr);
+      const endDay = endDate.getDate();
+      const endMonth = monthNames[endDate.getMonth()];
+      const endYear = endDate.getFullYear();
+      
+      if (startMonth === endMonth && startYear === endYear) {
+        return `${startDay}-${endDay} ${startMonth} ${startYear}`;
+      }
+      return `${startDay} ${startMonth} - ${endDay} ${endMonth} ${startYear}`;
+    }
+    return `${startDay} ${startMonth} ${startYear}`;
+  } catch {
+    return startTimeStr;
+  }
+};
+
+// Format month for monthly view
+const formatMonth = (timeStr) => {
+  if (!timeStr) return '';
+  try {
+    const date = new Date(timeStr);
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${monthNames[date.getMonth()]} ${date.getFullYear()}`;
+  } catch {
+    return timeStr;
+  }
+};
+
+// Filter times based on data range selection
+const filterTimesByDataRange = (times, dataRange) => {
+  if (!times || times.length === 0) return [];
+  
+  if (dataRange === 'daily') {
+    // Return all times with their indices
+    return times.map((time, idx) => ({
+      label: formatTime(time),
+      value: idx,
+      startIdx: idx,
+      endIdx: idx,
+      times: [time]
+    }));
+  }
+  
+  if (dataRange === '10day') {
+    // Group into 10-day periods (1-10, 11-20, 21-end of month)
+    const groups = [];
+    let currentGroup = null;
+    
+    times.forEach((time, idx) => {
+      const date = new Date(time);
+      const day = date.getDate();
+      const month = date.getMonth();
+      const year = date.getFullYear();
+      
+      // Determine which 10-day period (dekad)
+      let dekad;
+      if (day <= 10) dekad = 1;
+      else if (day <= 20) dekad = 2;
+      else dekad = 3;
+      
+      const groupKey = `${year}-${month}-${dekad}`;
+      
+      if (!currentGroup || currentGroup.key !== groupKey) {
+        if (currentGroup) {
+          groups.push(currentGroup);
+        }
+        currentGroup = {
+          key: groupKey,
+          startIdx: idx,
+          endIdx: idx,
+          times: [time],
+          dekad,
+          month,
+          year
+        };
+      } else {
+        currentGroup.endIdx = idx;
+        currentGroup.times.push(time);
+      }
+    });
+    
+    if (currentGroup) {
+      groups.push(currentGroup);
+    }
+    
+    return groups.map((g, i) => {
+      const startTime = g.times[0];
+      const endTime = g.times[g.times.length - 1];
+      return {
+        label: formatTimeRange(startTime, endTime),
+        value: i,
+        startIdx: g.startIdx,
+        endIdx: g.endIdx,
+        times: g.times
+      };
+    });
+  }
+  
+  if (dataRange === 'monthly') {
+    // Group by month
+    const groups = [];
+    let currentGroup = null;
+    
+    times.forEach((time, idx) => {
+      const date = new Date(time);
+      const month = date.getMonth();
+      const year = date.getFullYear();
+      const groupKey = `${year}-${month}`;
+      
+      if (!currentGroup || currentGroup.key !== groupKey) {
+        if (currentGroup) {
+          groups.push(currentGroup);
+        }
+        currentGroup = {
+          key: groupKey,
+          startIdx: idx,
+          endIdx: idx,
+          times: [time],
+          month,
+          year
+        };
+      } else {
+        currentGroup.endIdx = idx;
+        currentGroup.times.push(time);
+      }
+    });
+    
+    if (currentGroup) {
+      groups.push(currentGroup);
+    }
+    
+    return groups.map((g, i) => ({
+      label: formatMonth(g.times[0]),
+      value: i,
+      startIdx: g.startIdx,
+      endIdx: g.endIdx,
+      times: g.times
+    }));
+  }
+  
+  return [];
+};
 // Parse binary precipitation data (much faster than JSON)
 const parseBinaryPrecipData = (buffer) => {
   const view = new DataView(buffer);
@@ -199,10 +355,19 @@ const parseBinaryPrecipData = (buffer) => {
 
 // Fetch binary data (3-4x faster than JSON)
 // subsample: 1 = full resolution, 2 = half resolution (4x less data), etc.
-// Default subsample=2 for animation speed, use subsample=1 for static high-quality view
-const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 2) => {
+// Using subsample=1 for full quality
+const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 1) => {
   const response = await fetch(
     `http://localhost:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=${subsample}`
+  );
+  const buffer = await response.arrayBuffer();
+  return parseBinaryPrecipData(buffer);
+};
+
+// Fetch aggregated binary data (for 10-day and monthly views)
+const fetchAggregatedPrecipData = async (periodParam, startTime, endTime, subsample = 1) => {
+  const response = await fetch(
+    `http://localhost:5000/api/precipitation/aggregated/binary?period=${periodParam}&start_time=${startTime}&end_time=${endTime}&subsample=${subsample}`
   );
   const buffer = await response.arrayBuffer();
   return parseBinaryPrecipData(buffer);
@@ -220,6 +385,11 @@ export default function Home() {
   const [pngImage, setPngImage] = useState(null);
   const [tilesLoaded, setTilesLoaded] = useState(false);
   const [tileLoadProgress, setTileLoadProgress] = useState({ loaded: 0, total: 0 });
+  
+  // Data range selection: 'daily', '10day', 'monthly'
+  const [dataRange, setDataRange] = useState('daily');
+  const [filteredTimeOptions, setFilteredTimeOptions] = useState([]);
+  const [selectedTimeOption, setSelectedTimeOption] = useState(0);
   
   // Animation state
   const [animationFrom, setAnimationFrom] = useState(0);
@@ -254,7 +424,7 @@ export default function Home() {
     
     console.log(`🚀 Starting prefetch for ${targetPeriod}...`);
     
-    fetch(`http://localhost:5000/api/prefetch?period=${targetPeriod}&subsample=2`, {
+    fetch(`http://localhost:5000/api/prefetch?period=${targetPeriod}&subsample=1`, {
       signal: abortController.signal
     })
       .then(res => res.json())
@@ -316,6 +486,7 @@ export default function Home() {
       .then(data => {
         setAvailableTimes(data.times || []);
         setTimeIndex(0); // Reset time index when period changes
+        setSelectedTimeOption(0); // Reset selected time option
         // Set animation range to full period
         setAnimationFrom(0);
         setAnimationTo((data.times || []).length - 1);
@@ -325,6 +496,18 @@ export default function Home() {
     // Start prefetch for new period
     startPrefetch(period);
   }, [period]);
+  
+  // Update filtered time options when availableTimes or dataRange changes
+  useEffect(() => {
+    const filtered = filterTimesByDataRange(availableTimes, dataRange);
+    setFilteredTimeOptions(filtered);
+    setSelectedTimeOption(0);
+    
+    // Update timeIndex to first index of new filtered options
+    if (filtered.length > 0) {
+      setTimeIndex(filtered[0].startIdx);
+    }
+  }, [availableTimes, dataRange]);
 
   // Generate PNG from precipitation data (matching matplotlib style)
   const generatePNG = async (data) => {
@@ -457,21 +640,37 @@ export default function Home() {
     ctx.lineWidth = 2;
     ctx.strokeRect(padding.left, padding.top, mapWidth, mapHeight);
 
-    // Draw colorbar (vertical, matching matplotlib style)
+    // Draw colorbar (vertical, solid color blocks)
     const colorbarX = width - padding.right + 30;
     const colorbarY = padding.top;
     const colorbarWidth = 30;
     const colorbarHeight = mapHeight;
     
-    // Draw gradient
-    const gradient = ctx.createLinearGradient(0, colorbarY + colorbarHeight, 0, colorbarY);
-    const colors = ['#FFFFCC', '#C7E9B4', '#7FCDBB', '#41B6C4', '#1D91C0', '#225EA8', '#0C2C84'];
-    colors.forEach((color, i) => {
-      gradient.addColorStop(i / (colors.length - 1), color);
+    // Define color stops with ranges
+    const colorStops = [
+      { range: [0, 20], color: '#340A00', label: '0-20' },
+      { range: [20, 50], color: '#8E2800', label: '20-50' },
+      { range: [50, 100], color: '#DC6200', label: '50-100' },
+      { range: [100, 150], color: '#EFA700', label: '100-150' },
+      { range: [150, 200], color: '#EBE100', label: '150-200' },
+      { range: [200, 300], color: '#E0FD68', label: '200-300' },
+      { range: [300, 400], color: '#8AD58B', label: '300-400' },
+      { range: [400, 500], color: '#369135', label: '400-500' },
+      { range: [500, 1000], color: '#00460C', label: '>500' }
+    ];
+    
+    // Draw solid color blocks
+    const maxValue = 500; // Fixed max for consistency
+    colorStops.forEach(stop => {
+      const startY = colorbarY + colorbarHeight - (stop.range[1] / maxValue) * colorbarHeight;
+      const endY = colorbarY + colorbarHeight - (stop.range[0] / maxValue) * colorbarHeight;
+      const blockHeight = endY - startY;
+      
+      ctx.fillStyle = stop.color;
+      ctx.fillRect(colorbarX, startY, colorbarWidth, blockHeight);
     });
     
-    ctx.fillStyle = gradient;
-    ctx.fillRect(colorbarX, colorbarY, colorbarWidth, colorbarHeight);
+    // Draw border
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1;
     ctx.strokeRect(colorbarX, colorbarY, colorbarWidth, colorbarHeight);
@@ -482,9 +681,9 @@ export default function Home() {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     
-    const ticks = [0, 20, 40, 60, 80, 100];
+    const ticks = [0, 20, 50, 100, 150, 200, 300, 400, 500];
     ticks.forEach(tick => {
-      const y = colorbarY + colorbarHeight - (tick / stats.max) * colorbarHeight;
+      const y = colorbarY + colorbarHeight - (tick / maxValue) * colorbarHeight;
       ctx.beginPath();
       ctx.moveTo(colorbarX + colorbarWidth, y);
       ctx.lineTo(colorbarX + colorbarWidth + 5, y);
@@ -492,31 +691,46 @@ export default function Home() {
       ctx.fillText(tick.toString(), colorbarX + colorbarWidth + 10, y);
     });
 
-    // Colorbar label
+    // Colorbar label - adjust based on data range
     ctx.save();
     ctx.translate(colorbarX + colorbarWidth + 80, padding.top + mapHeight / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.font = 'bold 22px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('Daily Precipitation (mm)', 0, 0);
+    const colorbarLabel = dataRange === 'daily' ? 'Daily Precipitation (mm)' :
+                          dataRange === '10day' ? 'Avg. Precipitation (mm/day)' :
+                          'Avg. Precipitation (mm/day)';
+    ctx.fillText(colorbarLabel, 0, 0);
     ctx.restore();
 
-    // Title with period and time
+    // Title with period and time - adjust based on data range
     ctx.font = 'bold 28px Arial';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#000';
     
     // Get current time string for the title
-    const currentTimeStr = availableTimes[data.timeIndex] || availableTimes[timeIndex] || '';
-    const titleDate = formatTimeLong(currentTimeStr);
+    const currentOption = filteredTimeOptions[selectedTimeOption];
     const titlePeriod = formatPeriod(period);
     
+    let mainTitle, subtitle;
+    if (dataRange === 'daily') {
+      const currentTimeStr = availableTimes[data.timeIndex] || availableTimes[timeIndex] || '';
+      mainTitle = `Daily Precipitation - ${titlePeriod}`;
+      subtitle = formatTimeLong(currentTimeStr);
+    } else if (dataRange === '10day') {
+      mainTitle = `10-Day Average Precipitation - ${titlePeriod}`;
+      subtitle = currentOption ? currentOption.label : '';
+    } else {
+      mainTitle = `Monthly Average Precipitation - ${titlePeriod}`;
+      subtitle = currentOption ? currentOption.label : '';
+    }
+    
     // Draw main title
-    ctx.fillText(`Daily Precipitation - ${titlePeriod}`, width / 2, 40);
+    ctx.fillText(mainTitle, width / 2, 40);
     
     // Draw date subtitle
     ctx.font = '22px Arial';
-    ctx.fillText(titleDate, width / 2, 75);
+    ctx.fillText(subtitle, width / 2, 75);
 
     return canvas.toDataURL('image/png');
   };
@@ -528,9 +742,26 @@ export default function Home() {
     setLoading(true);
     try {
       const startTime = performance.now();
-      const data = await fetchBinaryPrecipData(period, timeIndex, 1); // Full resolution for static view
+      let data;
+      
+      // Get current selected option to determine time range
+      const currentOption = filteredTimeOptions[selectedTimeOption];
+      
+      if (dataRange === 'daily' || !currentOption) {
+        // Daily view - fetch single time step
+        data = await fetchBinaryPrecipData(period, timeIndex, 1);
+      } else {
+        // 10-day or monthly view - fetch aggregated data
+        data = await fetchAggregatedPrecipData(
+          period, 
+          currentOption.startIdx, 
+          currentOption.endIdx, 
+          1
+        );
+      }
+      
       const elapsed = performance.now() - startTime;
-      console.log(`Binary fetch (full res) took ${elapsed.toFixed(0)}ms`);
+      console.log(`Binary fetch (${dataRange}) took ${elapsed.toFixed(0)}ms`);
       
       setPrecipData(data);
       if (viewMode === 'png') {
@@ -544,13 +775,14 @@ export default function Home() {
     }
   };
 
-  // Auto-load data when period or timeIndex changes (only when not playing animation)
+  // Auto-load data when period, timeIndex, or dataRange changes (only when not playing animation)
   // Using a ref to prevent duplicate fetches
   const lastFetchRef = useRef('');
   
   useEffect(() => {
-    if (period && availableTimes.length > 0 && !isPlaying) {
-      const fetchKey = `${period}_${timeIndex}`;
+    if (period && availableTimes.length > 0 && !isPlaying && filteredTimeOptions.length > 0) {
+      const currentOption = filteredTimeOptions[selectedTimeOption];
+      const fetchKey = `${period}_${dataRange}_${selectedTimeOption}_${currentOption?.startIdx}_${currentOption?.endIdx}`;
       
       // Skip if already fetching this exact data
       if (lastFetchRef.current === fetchKey) return;
@@ -563,7 +795,7 @@ export default function Home() {
       
       return () => clearTimeout(timer);
     }
-  }, [period, timeIndex]);  // Removed viewMode - only fetch when data changes
+  }, [period, timeIndex, dataRange, selectedTimeOption, filteredTimeOptions]);  // Include dataRange and selectedTimeOption
   
   // Regenerate PNG when viewMode changes (without re-fetching)
   useEffect(() => {
@@ -621,7 +853,7 @@ export default function Home() {
     const localCache = { ...dataCache }; // Local copy to avoid state sync issues
     const PREFETCH_COUNT = 3; // Number of frames to prefetch ahead
     
-    // Prefetch next frames in parallel (uses default subsample=2 to match backend cache)
+    // Prefetch next frames in parallel (uses subsample=1 for full resolution)
     const prefetchFrames = (fromFrame) => {
       const promises = [];
       for (let i = 1; i <= PREFETCH_COUNT; i++) {
@@ -648,7 +880,7 @@ export default function Home() {
       const cacheKey = `${period}_${currentFrame}_anim`;
       let frameData = localCache[cacheKey];
       
-      // Fetch on-demand if not cached (uses default subsample=2 to match backend cache)
+      // Fetch on-demand if not cached (uses subsample=1 for full resolution)
       if (!frameData) {
         try {
           frameData = await fetchBinaryPrecipData(period, currentFrame);
@@ -773,18 +1005,92 @@ export default function Home() {
               </select>
             </div>
             
-            {/* Time - Third */}
+            {/* Data Range - Third */}
+            <div className="dropdown-row" style={{ marginBottom: '15px' }}>
+              <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Data Range:</label>
+              <div style={{ 
+                display: 'flex', 
+                flex: 1,
+                backgroundColor: '#e0e0e0', 
+                borderRadius: '8px', 
+                padding: '3px',
+                gap: '0'
+              }}>
+                <button
+                  onClick={() => setDataRange('daily')}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '13px',
+                    transition: 'all 0.2s ease',
+                    backgroundColor: dataRange === 'daily' ? '#0000CD' : 'transparent',
+                    color: dataRange === 'daily' ? 'white' : '#333',
+                    boxShadow: dataRange === 'daily' ? '0 2px 4px rgba(0,0,0,0.2)' : 'none'
+                  }}
+                >
+                  Per Day
+                </button>
+                <button
+                  onClick={() => setDataRange('10day')}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '13px',
+                    transition: 'all 0.2s ease',
+                    backgroundColor: dataRange === '10day' ? '#0000CD' : 'transparent',
+                    color: dataRange === '10day' ? 'white' : '#333',
+                    boxShadow: dataRange === '10day' ? '0 2px 4px rgba(0,0,0,0.2)' : 'none'
+                  }}
+                >
+                  Per 10 Days
+                </button>
+                <button
+                  onClick={() => setDataRange('monthly')}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontWeight: '500',
+                    fontSize: '13px',
+                    transition: 'all 0.2s ease',
+                    backgroundColor: dataRange === 'monthly' ? '#0000CD' : 'transparent',
+                    color: dataRange === 'monthly' ? 'white' : '#333',
+                    boxShadow: dataRange === 'monthly' ? '0 2px 4px rgba(0,0,0,0.2)' : 'none'
+                  }}
+                >
+                  Per Month
+                </button>
+              </div>
+            </div>
+            
+            {/* Time - Fourth */}
             <div className="dropdown-row" style={{ marginBottom: '15px' }}>
               <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Time:</label>
               <select 
-                value={timeIndex}
-                onChange={(e) => setTimeIndex(parseInt(e.target.value))}
+                value={selectedTimeOption}
+                onChange={(e) => {
+                  const optionIdx = parseInt(e.target.value);
+                  setSelectedTimeOption(optionIdx);
+                  // Set timeIndex to the start of the selected range
+                  if (filteredTimeOptions[optionIdx]) {
+                    setTimeIndex(filteredTimeOptions[optionIdx].startIdx);
+                  }
+                }}
                 style={{ flex: 1 }}
               >
-                <option value="">Select Time</option>
-                {availableTimes.map((time, idx) => (
+                {filteredTimeOptions.map((option, idx) => (
                   <option key={idx} value={idx}>
-                    {formatTime(time)}
+                    {option.label}
                   </option>
                 ))}
               </select>
@@ -794,12 +1100,37 @@ export default function Home() {
           </section>
         </div>
 
-        {/* Visualization - Fourth */}
+        {/* Visualization - Fifth */}
         <div className="image-section">
           <div className="map-display">
             <h3>Precipitation Visualization:</h3>
+            {/* Show current data info */}
+            <div style={{ 
+              marginBottom: '10px', 
+              padding: '10px 15px', 
+              backgroundColor: '#f0f8ff', 
+              borderRadius: '8px',
+              border: '1px solid #b8d4e8',
+              fontSize: '14px'
+            }}>
+              <span style={{ fontWeight: 'bold', color: '#0000CD' }}>
+                {dataRange === 'daily' ? '📅 Daily Data' : 
+                 dataRange === '10day' ? '📊 10-Day Average' : 
+                 '📆 Monthly Average'}
+              </span>
+              {filteredTimeOptions[selectedTimeOption] && (
+                <span style={{ color: '#555', marginLeft: '10px' }}>
+                  — {filteredTimeOptions[selectedTimeOption].label}
+                  {dataRange !== 'daily' && (
+                    <span style={{ color: '#888', marginLeft: '5px' }}>
+                      ({filteredTimeOptions[selectedTimeOption].times.length} days averaged)
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
             {viewMode === 'leaflet' ? (
-              <Map precipData={precipData} />
+              <Map precipData={precipData} period={period} dataRange={dataRange} />
             ) : (
               <div style={{ marginTop: '20px' }}>
                 {pngImage ? (
