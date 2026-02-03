@@ -210,3 +210,19 @@ button:active {
     width: 100%;
   }
 }
+
+/* Province tooltip styling */
+.province-tooltip {
+  background-color: rgba(0, 0, 0, 0.8) !important;
+  border: none !important;
+  border-radius: 4px !important;
+  color: white !important;
+  font-weight: bold !important;
+  font-size: 13px !important;
+  padding: 6px 12px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3) !important;
+}
+
+.province-tooltip::before {
+  border-top-color: rgba(0, 0, 0, 0.8) !important;
+}

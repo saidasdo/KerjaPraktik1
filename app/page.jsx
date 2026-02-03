@@ -355,8 +355,8 @@ const parseBinaryPrecipData = (buffer) => {
 
 // Fetch binary data (3-4x faster than JSON)
 // subsample: 1 = full resolution, 2 = half resolution (4x less data), etc.
-// Default subsample=2 for animation speed, use subsample=1 for static high-quality view
-const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 2) => {
+// Using subsample=1 for full quality
+const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 1) => {
   const response = await fetch(
     `http://localhost:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=${subsample}`
   );
@@ -365,7 +365,7 @@ const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 2) => {
 };
 
 // Fetch aggregated binary data (for 10-day and monthly views)
-const fetchAggregatedPrecipData = async (periodParam, startTime, endTime, subsample = 2) => {
+const fetchAggregatedPrecipData = async (periodParam, startTime, endTime, subsample = 1) => {
   const response = await fetch(
     `http://localhost:5000/api/precipitation/aggregated/binary?period=${periodParam}&start_time=${startTime}&end_time=${endTime}&subsample=${subsample}`
   );
@@ -424,7 +424,7 @@ export default function Home() {
     
     console.log(`🚀 Starting prefetch for ${targetPeriod}...`);
     
-    fetch(`http://localhost:5000/api/prefetch?period=${targetPeriod}&subsample=2`, {
+    fetch(`http://localhost:5000/api/prefetch?period=${targetPeriod}&subsample=1`, {
       signal: abortController.signal
     })
       .then(res => res.json())
@@ -853,7 +853,7 @@ export default function Home() {
     const localCache = { ...dataCache }; // Local copy to avoid state sync issues
     const PREFETCH_COUNT = 3; // Number of frames to prefetch ahead
     
-    // Prefetch next frames in parallel (uses default subsample=2 to match backend cache)
+    // Prefetch next frames in parallel (uses subsample=1 for full resolution)
     const prefetchFrames = (fromFrame) => {
       const promises = [];
       for (let i = 1; i <= PREFETCH_COUNT; i++) {
@@ -880,7 +880,7 @@ export default function Home() {
       const cacheKey = `${period}_${currentFrame}_anim`;
       let frameData = localCache[cacheKey];
       
-      // Fetch on-demand if not cached (uses default subsample=2 to match backend cache)
+      // Fetch on-demand if not cached (uses subsample=1 for full resolution)
       if (!frameData) {
         try {
           frameData = await fetchBinaryPrecipData(period, currentFrame);
@@ -1130,7 +1130,7 @@ export default function Home() {
               )}
             </div>
             {viewMode === 'leaflet' ? (
-              <Map precipData={precipData} />
+              <Map precipData={precipData} period={period} dataRange={dataRange} />
             ) : (
               <div style={{ marginTop: '20px' }}>
                 {pngImage ? (

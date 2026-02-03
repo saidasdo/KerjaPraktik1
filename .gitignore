@@ -5,3 +5,10 @@ dist
 .DS_Store
 *.log
 .env*.local
+
+# Downloaded precipitation data (large NetCDF files)
+data/
+*.nc
+
+# Data download script (not needed in production)
+backend/download_data.py

@@ -49,7 +49,7 @@ def get_dataset(period):
     _dataset_cache[period] = ds
     return ds
 
-def get_land_mask(subsample=2):
+def get_land_mask(subsample=1):
     """Get land mask from reference dataset (202508 has proper ocean masking)
     Caches masks for different subsample values separately.
     """
@@ -305,7 +305,7 @@ def get_precipitation():
         # Get parameters
         period = request.args.get('period', '202601')
         time_index = int(request.args.get('time', 0))
-        subsample = 2  # Fixed subsample rate
+        subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
@@ -427,7 +427,7 @@ def get_precipitation_binary():
         # Get parameters
         period = request.args.get('period', '202601')
         time_index = int(request.args.get('time', 0))
-        subsample = 2  # Fixed subsample rate
+        subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
@@ -521,7 +521,7 @@ def prefetch_period():
     """
     try:
         period = request.args.get('period', '202601')
-        subsample = 2  # Fixed subsample rate
+        subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
@@ -616,7 +616,7 @@ def get_aggregated_precipitation_binary():
         period = request.args.get('period', '202601')
         start_day = int(request.args.get('start_time', 0))
         end_day = int(request.args.get('end_time', 0))
-        subsample = 2  # Fixed subsample rate
+        subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
@@ -722,7 +722,10 @@ def get_aggregated_precipitation_binary():
 def get_timeseries():
     """Get precipitation time series for a specific lat/lon point.
     Supports different aggregation modes: 'day', '10day', 'monthly'
-    Averages data for the same day if multiple time steps exist.
+    
+    HYBRID APPROACH:
+    - If period is fully cached → extract from cached data (fast, no network)
+    - If not fully cached → use direct dataset query (slower, but works always)
     """
     try:
         lat = float(request.args.get('lat'))
@@ -733,7 +736,7 @@ def get_timeseries():
         if period not in AVAILABLE_PERIODS:
             return jsonify({'error': f'Period {period} not available'}), 400
         
-        # Get dataset
+        # Get dataset to determine total days and find grid indices
         ds = get_dataset(period)
         
         # Check if 'pr' variable exists
@@ -745,7 +748,7 @@ def get_timeseries():
         lats = ds['lat'].values
         lons = ds['lon'].values
         
-        # Find nearest grid point
+        # Find nearest grid point (full resolution)
         lat_idx = np.argmin(np.abs(lats - lat))
         lon_idx = np.argmin(np.abs(lons - lon))
         
@@ -753,54 +756,130 @@ def get_timeseries():
         actual_lat = float(lats[lat_idx])
         actual_lon = float(lons[lon_idx])
         
-        # Extract time series for this grid point
-        pr_data = ds['pr'].isel(lat=lat_idx, lon=lon_idx)
+        # Calculate total days
+        total_raw_times = len(ds.time)
+        total_days = total_raw_times // TIME_STEPS_PER_DAY
         
-        # Get time values
-        times = ds['time'].values
+        # Use full resolution (subsample=1) for accurate values
+        subsample = 1
         
-        # Build raw time series and group by date (to handle same-day averaging)
-        date_values = {}  # date_str -> list of precipitation values
-        date_indices = {}  # date_str -> list of time indices
+        # Try to use cached data - check LAST day first
+        # If last day is cached, the entire period is cached (prefetch is sequential)
+        use_cache = False
         
-        for i, time_val in enumerate(times):
-            precip_val = float(pr_data.isel(time=i).values)
+        # Get lat/lon indices for cache lookup (same as full resolution since subsample=1)
+        lat_idx_cache = lat_idx
+        lon_idx_cache = lon_idx
+        
+        # Check if last day is cached by timing its retrieval
+        try:
+            last_day_idx = total_days - 1
+            t_check = time_module.time()
+            cached_last = get_cached_precip_data(period, last_day_idx, subsample, False)
+            check_time = time_module.time() - t_check
             
-            # Handle invalid values - SRF uses positive fill value 9.96921E36
-            if precip_val < -1e30 or precip_val > 1e30 or precip_val < 0:
-                precip_val = 0  # Treat as no rain instead of skipping
+            # If last day retrieval was fast (<100ms), entire period is cached
+            if check_time < 0.1:
+                use_cache = True
+                print(f"✅ Cache check: last day retrieved in {check_time*1000:.0f}ms - using cache")
             else:
-                # SRF precipitation is in kg/m²/s, convert to mm/day
-                precip_val = precip_val * 86400
+                print(f"⚠️ Cache check: last day took {check_time*1000:.0f}ms - using direct query")
+        except Exception as e:
+            print(f"⚠️ Cache check failed: {e} - using direct query")
+            use_cache = False
+        
+        # Use cached data if available
+        if use_cache:
+            try:
+                t_cache_start = time_module.time()
+                daily_series = []
                 
-            # Convert numpy datetime64 to ISO string (YYYY-MM-DD)
-            time_str = str(time_val)[:10]
-            
-            if time_str not in date_values:
-                date_values[time_str] = []
-                date_indices[time_str] = []
-            
-            date_values[time_str].append(precip_val)
-            date_indices[time_str].append(i)
+                # Get time values for date labels
+                times = ds['time'].values
+                
+                for day_idx in range(total_days):
+                    cached = get_cached_precip_data(period, day_idx, subsample, False)
+                    
+                    # Extract value at the grid point from cached data
+                    values_grid = cached['values']
+                    precip_val = float(values_grid[lat_idx_cache, lon_idx_cache])
+                    
+                    # Handle invalid values (-999 means no data)
+                    if precip_val < -900:
+                        precip_val = 0
+                    
+                    # Get date from time array
+                    time_idx = day_idx * TIME_STEPS_PER_DAY
+                    time_str = str(times[time_idx])[:10]
+                    
+                    daily_series.append({
+                        'date': time_str,
+                        'day_index': day_idx,
+                        'original_indices': list(range(time_idx, min(time_idx + TIME_STEPS_PER_DAY, total_raw_times))),
+                        'precipitation': round(precip_val, 2),
+                        'num_samples': TIME_STEPS_PER_DAY
+                    })
+                
+                cache_time = time_module.time() - t_cache_start
+                print(f"✅ Time series from CACHE: {len(daily_series)} days in {cache_time*1000:.0f}ms")
+                    
+            except Exception as e:
+                print(f"⚠️ Cache extraction failed: {e}, falling back to direct query")
+                use_cache = False
         
-        # Average same-day values and build daily series
-        daily_series = []
-        sorted_dates = sorted(date_values.keys())
-        
-        for idx, date_str in enumerate(sorted_dates):
-            values = date_values[date_str]
-            indices = date_indices[date_str]
-            avg_precip = np.mean(values)
+        # Fallback: Direct query (original method)
+        if not use_cache:
+            t_direct_start = time_module.time()
             
-            daily_series.append({
-                'date': date_str,
-                'day_index': idx,  # Use sequential index for aggregated days
-                'original_indices': indices,  # Keep track of original time indices
-                'precipitation': round(avg_precip, 2),
-                'num_samples': len(values)  # How many samples were averaged
-            })
-        
-        print(f"📊 Timeseries: {len(daily_series)} unique days from {len(times)} time steps")
+            # Extract time series for this grid point
+            pr_data = ds['pr'].isel(lat=lat_idx, lon=lon_idx)
+            
+            # Get time values
+            times = ds['time'].values
+            
+            # Build raw time series and group by date (to handle same-day averaging)
+            date_values = {}  # date_str -> list of precipitation values
+            date_indices = {}  # date_str -> list of time indices
+            
+            for i, time_val in enumerate(times):
+                precip_val = float(pr_data.isel(time=i).values)
+                
+                # Handle invalid values - SRF uses positive fill value 9.96921E36
+                if precip_val < -1e30 or precip_val > 1e30 or precip_val < 0:
+                    precip_val = 0  # Treat as no rain instead of skipping
+                else:
+                    # SRF precipitation is in kg/m²/s, convert to mm/day
+                    precip_val = precip_val * 86400
+                    
+                # Convert numpy datetime64 to ISO string (YYYY-MM-DD)
+                time_str = str(time_val)[:10]
+                
+                if time_str not in date_values:
+                    date_values[time_str] = []
+                    date_indices[time_str] = []
+                
+                date_values[time_str].append(precip_val)
+                date_indices[time_str].append(i)
+            
+            # Average same-day values and build daily series
+            daily_series = []
+            sorted_dates = sorted(date_values.keys())
+            
+            for idx, date_str in enumerate(sorted_dates):
+                values = date_values[date_str]
+                indices = date_indices[date_str]
+                avg_precip = np.mean(values)
+                
+                daily_series.append({
+                    'date': date_str,
+                    'day_index': idx,
+                    'original_indices': indices,
+                    'precipitation': round(avg_precip, 2),
+                    'num_samples': len(values)
+                })
+            
+            direct_time = time_module.time() - t_direct_start
+            print(f"📊 Time series from DIRECT query: {len(daily_series)} days in {direct_time*1000:.0f}ms")
         
         # Aggregate based on mode
         if mode == 'day':
@@ -827,25 +906,35 @@ def get_timeseries():
                         'label': f"Days {i+1}-{min(i+10, len(daily_series))}"
                     })
         elif mode == 'monthly':
-            # Group by month (entire period is typically one month)
-            if daily_series:
-                avg_precip = np.mean([d['precipitation'] for d in daily_series])
+            # Group by actual calendar month
+            month_data = {}  # 'YYYY-MM' -> list of daily values
+            for d in daily_series:
+                month_key = d['date'][:7]  # 'YYYY-MM'
+                if month_key not in month_data:
+                    month_data[month_key] = []
+                month_data[month_key].append(d)
+            
+            time_series = []
+            for month_key in sorted(month_data.keys()):
+                month_days = month_data[month_key]
+                avg_precip = np.mean([d['precipitation'] for d in month_days])
                 # Collect all original indices
                 all_indices = []
-                for d in daily_series:
-                    all_indices.extend(d['original_indices'])
+                for d in month_days:
+                    if 'original_indices' in d:
+                        all_indices.extend(d['original_indices'])
                 
-                time_series = [{
-                    'date': daily_series[0]['date'],
-                    'end_date': daily_series[-1]['date'],
-                    'start_index': min(all_indices),
-                    'end_index': max(all_indices),
-                    'days': len(daily_series),
+                entry = {
+                    'date': month_days[0]['date'],
+                    'end_date': month_days[-1]['date'],
+                    'days': len(month_days),
                     'precipitation': round(avg_precip, 2),
-                    'label': f"Monthly Average ({len(daily_series)} days)"
-                }]
-            else:
-                time_series = []
+                    'label': f"{month_key} ({len(month_days)} days)"
+                }
+                if all_indices:
+                    entry['start_index'] = min(all_indices)
+                    entry['end_index'] = max(all_indices)
+                time_series.append(entry)
         else:
             time_series = daily_series
         
@@ -874,7 +963,8 @@ def get_timeseries():
             'period': period,
             'mode': mode,
             'time_series': time_series,
-            'statistics': stats
+            'statistics': stats,
+            'source': 'cache' if use_cache else 'direct'
         })
         
     except ValueError as e:
@@ -979,48 +1069,101 @@ def get_region_timeseries():
         if num_points == 0:
             return jsonify({'error': f'No data points found in region {province_name}'}), 400
         
-        # Get time values
+        # Get time values and calculate total days
         times = ds['time'].values
+        total_raw_times = len(times)
+        total_days = total_raw_times // TIME_STEPS_PER_DAY
         
-        # Build time series by averaging over region for each time step
-        print(f"📊 Calculating regional averages for {len(times)} time steps...")
+        # Check if data is cached (check last day)
+        subsample = 1
+        use_cache = False
         
-        date_values = {}  # date_str -> list of regional average values
-        
-        for i, time_val in enumerate(times):
-            # Get precipitation for this time step
-            pr_slice = ds['pr'].isel(time=i).values
+        try:
+            last_day_idx = total_days - 1
+            t_check = time_module.time()
+            cached_last = get_cached_precip_data(period, last_day_idx, subsample, False)
+            check_time = time_module.time() - t_check
             
-            # Handle fill values
-            valid_mask = (pr_slice > -1e30) & (pr_slice < 1e30) & (pr_slice >= 0)
-            combined_mask = region_mask & valid_mask
-            
-            if np.sum(combined_mask) > 0:
-                # Calculate regional average (convert kg/m²/s to mm/day)
-                regional_avg = float(np.mean(pr_slice[combined_mask])) * 86400
+            if check_time < 0.1:
+                use_cache = True
+                print(f"✅ Region cache check: using CACHED data")
             else:
-                regional_avg = 0
-            
-            # Group by date
-            time_str = str(time_val)[:10]
-            if time_str not in date_values:
-                date_values[time_str] = []
-            date_values[time_str].append(regional_avg)
+                print(f"⚠️ Region cache check: using DIRECT query ({check_time*1000:.0f}ms)")
+        except:
+            print(f"⚠️ Region cache check failed: using DIRECT query")
         
-        # Average same-day values and build daily series
-        daily_series = []
-        sorted_dates = sorted(date_values.keys())
-        
-        for idx, date_str in enumerate(sorted_dates):
-            values = date_values[date_str]
-            avg_precip = np.mean(values)
+        # Build time series by averaging over region for each day
+        if use_cache:
+            print(f"📊 Calculating regional averages from CACHE for {total_days} days...")
+            t_calc_start = time_module.time()
             
-            daily_series.append({
-                'date': date_str,
-                'day_index': idx,
-                'precipitation': round(avg_precip, 2),
-                'num_samples': len(values)
-            })
+            daily_series = []
+            for day_idx in range(total_days):
+                cached = get_cached_precip_data(period, day_idx, subsample, False)
+                values_grid = cached['values']
+                
+                # Apply region mask and calculate average
+                # Handle invalid values (-999 means no data)
+                valid_mask = (values_grid > -900) & region_mask
+                
+                if np.sum(valid_mask) > 0:
+                    regional_avg = float(np.mean(values_grid[valid_mask]))
+                else:
+                    regional_avg = 0
+                
+                # Get date from time array
+                time_idx = day_idx * TIME_STEPS_PER_DAY
+                time_str = str(times[time_idx])[:10]
+                
+                daily_series.append({
+                    'date': time_str,
+                    'day_index': day_idx,
+                    'precipitation': round(regional_avg, 2),
+                    'num_samples': TIME_STEPS_PER_DAY
+                })
+            
+            calc_time = time_module.time() - t_calc_start
+            print(f"✅ Regional averages from CACHE: {len(daily_series)} days in {calc_time*1000:.0f}ms")
+        else:
+            # Fallback: Direct query (slow)
+            print(f"📊 Calculating regional averages from DIRECT query for {len(times)} time steps...")
+            
+            date_values = {}  # date_str -> list of regional average values
+            
+            for i, time_val in enumerate(times):
+                # Get precipitation for this time step
+                pr_slice = ds['pr'].isel(time=i).values
+                
+                # Handle fill values
+                valid_mask = (pr_slice > -1e30) & (pr_slice < 1e30) & (pr_slice >= 0)
+                combined_mask = region_mask & valid_mask
+                
+                if np.sum(combined_mask) > 0:
+                    # Calculate regional average (convert kg/m²/s to mm/day)
+                    regional_avg = float(np.mean(pr_slice[combined_mask])) * 86400
+                else:
+                    regional_avg = 0
+                
+                # Group by date
+                time_str = str(time_val)[:10]
+                if time_str not in date_values:
+                    date_values[time_str] = []
+                date_values[time_str].append(regional_avg)
+            
+            # Average same-day values and build daily series
+            daily_series = []
+            sorted_dates = sorted(date_values.keys())
+            
+            for idx, date_str in enumerate(sorted_dates):
+                values = date_values[date_str]
+                avg_precip = np.mean(values)
+                
+                daily_series.append({
+                    'date': date_str,
+                    'day_index': idx,
+                    'precipitation': round(avg_precip, 2),
+                    'num_samples': len(values)
+                })
         
         # Aggregate based on mode
         if mode == 'day':
@@ -1039,15 +1182,25 @@ def get_region_timeseries():
                         'label': f"Days {i+1}-{min(i+10, len(daily_series))}"
                     })
         elif mode == 'monthly':
-            if daily_series:
-                avg_precip = np.mean([d['precipitation'] for d in daily_series])
-                time_series = [{
-                    'date': daily_series[0]['date'],
-                    'end_date': daily_series[-1]['date'],
-                    'days': len(daily_series),
+            # Group by actual calendar month
+            month_data = {}  # 'YYYY-MM' -> list of daily values
+            for d in daily_series:
+                month_key = d['date'][:7]  # 'YYYY-MM'
+                if month_key not in month_data:
+                    month_data[month_key] = []
+                month_data[month_key].append(d)
+            
+            time_series = []
+            for month_key in sorted(month_data.keys()):
+                month_days = month_data[month_key]
+                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                time_series.append({
+                    'date': month_days[0]['date'],
+                    'end_date': month_days[-1]['date'],
+                    'days': len(month_days),
                     'precipitation': round(avg_precip, 2),
-                    'label': f"Monthly Average ({len(daily_series)} days)"
-                }]
+                    'label': f"{month_key} ({len(month_days)} days)"
+                })
             else:
                 time_series = []
         else:
