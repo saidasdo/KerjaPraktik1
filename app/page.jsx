@@ -93,7 +93,7 @@ const formatPeriod = (periodStr) => {
   return `${monthNames[month - 1]} ${year}`;
 };
 
-// Format period for dropdown with short month
+// Format period for dropdown with short month (Initial only)
 const formatPeriodShort = (periodStr) => {
   if (!periodStr || periodStr.length !== 6) return periodStr;
   const year = parseInt(periodStr.substring(0, 4));
@@ -101,15 +101,7 @@ const formatPeriodShort = (periodStr) => {
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   
-  // Calculate end date (6 months later)
-  let endMonth = month + 5; // 6 months total, so +5 from start
-  let endYear = year;
-  if (endMonth > 12) {
-    endMonth -= 12;
-    endYear += 1;
-  }
-  
-  return `${monthNames[month - 1]} ${year} - ${monthNames[endMonth - 1]} ${endYear}`;
+  return `${monthNames[month - 1]} ${year}`;
 };
 
 // Format time string "2024-12-01T00:00:00" to "1 Dec 2024" or "Dec 1, 2024"
@@ -376,7 +368,7 @@ export default function Home() {
   // ... your existing state ...
   
   const [precipData, setPrecipData] = useState(null);
-  const [period, setPeriod] = useState('202512');
+  const [period, setPeriod] = useState('202601');
   const [timeIndex, setTimeIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [availableTimes, setAvailableTimes] = useState([]);
@@ -396,6 +388,7 @@ export default function Home() {
   const [animationTo, setAnimationTo] = useState(0);
   const [animationFps, setAnimationFps] = useState(2);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [animationCurrentFrame, setAnimationCurrentFrame] = useState(0);
   const animationRef = useRef(null);
   const isPlayingRef = useRef(false);
   
@@ -422,14 +415,14 @@ export default function Home() {
     setIsPrefetching(true);
     setPrefetchStatus({ period: targetPeriod, status: 'loading', cached: 0, total: 0 });
     
-    console.log(`🚀 Starting prefetch for ${targetPeriod}...`);
+    console.log(`Starting prefetch for ${targetPeriod}...`);
     
     fetch(`http://localhost:5000/api/prefetch?period=${targetPeriod}&subsample=1`, {
       signal: abortController.signal
     })
       .then(res => res.json())
       .then(data => {
-        console.log(`✅ Backend prefetch complete: ${data.newlyCached} new, ${data.alreadyCached} cached in ${data.elapsedSeconds}s`);
+        console.log(`Backend prefetch complete: ${data.newlyCached} new, ${data.alreadyCached} cached in ${data.elapsedSeconds}s`);
         setPrefetchStatus({ 
           period: targetPeriod, 
           status: 'done', 
@@ -444,7 +437,7 @@ export default function Home() {
           console.error('Prefetch error:', err);
           setPrefetchStatus({ period: targetPeriod, status: 'error' });
         } else {
-          console.log(`⏸️ Prefetch paused for ${targetPeriod}`);
+          console.log(`Prefetch paused for ${targetPeriod}`);
         }
         setIsPrefetching(false);
       });
@@ -506,6 +499,9 @@ export default function Home() {
     // Update timeIndex to first index of new filtered options
     if (filtered.length > 0) {
       setTimeIndex(filtered[0].startIdx);
+      // Update animation range to match filtered options
+      setAnimationFrom(0);
+      setAnimationTo(filtered.length - 1);
     }
   }, [availableTimes, dataRange]);
 
@@ -515,11 +511,16 @@ export default function Home() {
 
     const { lat, lon, values, stats, bounds } = data;
     
-    // Match matplotlib figure size: 14x8 inches at 150 DPI
+    // Calculate proper aspect ratio based on geographic bounds
+    // Indonesia: ~46° longitude, ~17° latitude = ~2.7:1 ratio
+    const geoAspectRatio = (bounds.maxLon - bounds.minLon) / (bounds.maxLat - bounds.minLat);
+    
+    // Set canvas size based on geographic aspect ratio
     const dpi = 150;
-    const width = 14 * dpi;  // 2100px
-    const height = 8 * dpi;  // 1200px
-    const padding = { left: 120, right: 200, top: 120, bottom: 140 };
+    const baseWidth = 18 * dpi;  // 2700px base width
+    const width = baseWidth;
+    const height = Math.round(baseWidth / geoAspectRatio) + 180; // Add space for padding
+    const padding = { left: 80, right: 160, top: 80, bottom: 100 };
     
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -598,7 +599,7 @@ export default function Home() {
 
     // Create high-resolution canvas for WebGL rendering (increase multiplier for smoother edges)
     const dataCanvas = document.createElement('canvas');
-    const resolutionMultiplier = 12; // Higher = smoother but slower
+    const resolutionMultiplier = 20; // Higher = smoother cell boundaries
     dataCanvas.width = lon.length * resolutionMultiplier;
     dataCanvas.height = lat.length * resolutionMultiplier;
     
@@ -627,13 +628,59 @@ export default function Home() {
     const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);
     const mapBottomRight = geoToCanvas(dataBounds.minLat, dataBounds.maxLon);
     
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    // Disable smoothing to keep sharp color boundaries (no blurry transitions)
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(dataCanvas, 
       mapTopLeft.x, mapTopLeft.y, 
       mapBottomRight.x - mapTopLeft.x, 
       mapBottomRight.y - mapTopLeft.y
     );
+    ctx.imageSmoothingEnabled = true; // Re-enable for other drawings
+
+    // Draw ZOM boundaries on static image
+    try {
+      const zomResponse = await fetch('/zom.geojson');
+      const zomGeoJson = await zomResponse.json();
+      
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1.2;
+      ctx.globalAlpha = 0.7;
+      
+      // Helper function to draw a polygon
+      const drawPolygon = (coordinates) => {
+        ctx.beginPath();
+        coordinates.forEach((ring, ringIdx) => {
+          ring.forEach((coord, idx) => {
+            const [lng, lat] = coord;
+            // Skip if outside visible bounds
+            if (lng < bounds.minLon - 1 || lng > bounds.maxLon + 1 || 
+                lat < bounds.minLat - 1 || lat > bounds.maxLat + 1) return;
+            
+            const { x, y } = geoToCanvas(lat, lng);
+            if (idx === 0) {
+              ctx.moveTo(x, y);
+            } else {
+              ctx.lineTo(x, y);
+            }
+          });
+        });
+        ctx.stroke();
+      };
+      
+      // Draw each feature
+      zomGeoJson.features.forEach(feature => {
+        const geom = feature.geometry;
+        if (geom.type === 'Polygon') {
+          drawPolygon(geom.coordinates);
+        } else if (geom.type === 'MultiPolygon') {
+          geom.coordinates.forEach(polygon => drawPolygon(polygon));
+        }
+      });
+      
+      ctx.globalAlpha = 1.0;
+    } catch (error) {
+      console.error('Error loading ZOM borders for PNG:', error);
+    }
 
     // Draw border around map
     ctx.strokeStyle = '#000';
@@ -841,71 +888,80 @@ export default function Home() {
     return newCache;
   };
 
-  // Animation playback logic - fetches frames on-demand for instant start
+  // Animation playback logic - works with filteredTimeOptions for any data range
   const playAnimation = async () => {
     if (isPlaying) return;
     
     setIsPlaying(true);
     isPlayingRef.current = true;
-    setTimeIndex(animationFrom);
+    setAnimationCurrentFrame(animationFrom);
     
     let currentFrame = animationFrom;
     const localCache = { ...dataCache }; // Local copy to avoid state sync issues
-    const PREFETCH_COUNT = 3; // Number of frames to prefetch ahead
+    const PREFETCH_COUNT = 2; // Number of frames to prefetch ahead
     
-    // Prefetch next frames in parallel (uses subsample=1 for full resolution)
+    // Fetch data for a specific frame option
+    const fetchFrameData = async (frameIdx) => {
+      const option = filteredTimeOptions[frameIdx];
+      if (!option) return null;
+      
+      const cacheKey = `${period}_${dataRange}_${frameIdx}_anim`;
+      if (localCache[cacheKey]) return localCache[cacheKey];
+      
+      try {
+        let data;
+        if (dataRange === 'daily') {
+          data = await fetchBinaryPrecipData(period, option.startIdx, 1);
+        } else {
+          // 10-day or monthly - fetch aggregated
+          data = await fetchAggregatedPrecipData(period, option.startIdx, option.endIdx, 1);
+        }
+        localCache[cacheKey] = data;
+        return data;
+      } catch (error) {
+        console.error(`Error fetching frame ${frameIdx}:`, error);
+        return null;
+      }
+    };
+    
+    // Prefetch next frames in parallel
     const prefetchFrames = (fromFrame) => {
-      const promises = [];
       for (let i = 1; i <= PREFETCH_COUNT; i++) {
         let nextFrame = fromFrame + i;
         if (nextFrame > animationTo) nextFrame = animationFrom + (nextFrame - animationTo - 1);
-        const cacheKey = `${period}_${nextFrame}_anim`;
+        const cacheKey = `${period}_${dataRange}_${nextFrame}_anim`;
         if (!localCache[cacheKey]) {
-          promises.push(
-            fetchBinaryPrecipData(period, nextFrame)
-              .then(data => {
-                localCache[cacheKey] = data;
-              })
-              .catch(() => {})
-          );
+          fetchFrameData(nextFrame); // Fire and forget
         }
       }
-      // Fire and forget - don't await
-      Promise.all(promises);
     };
     
     const animate = async () => {
       if (!isPlayingRef.current) return;
       
-      const cacheKey = `${period}_${currentFrame}_anim`;
-      let frameData = localCache[cacheKey];
-      
-      // Fetch on-demand if not cached (uses subsample=1 for full resolution)
-      if (!frameData) {
-        try {
-          frameData = await fetchBinaryPrecipData(period, currentFrame);
-          localCache[cacheKey] = frameData;
-        } catch (error) {
-          console.error(`Error fetching frame ${currentFrame}:`, error);
-        }
-      }
+      const frameData = await fetchFrameData(currentFrame);
       
       // Prefetch upcoming frames in background
       prefetchFrames(currentFrame);
       
       if (frameData && isPlayingRef.current) {
         setPrecipData(frameData);
+        setSelectedTimeOption(currentFrame);
+        if (filteredTimeOptions[currentFrame]) {
+          setTimeIndex(filteredTimeOptions[currentFrame].startIdx);
+        }
         if (viewMode === 'png') {
           const png = await generatePNG(frameData);
           setPngImage(png);
         }
       }
       
+      setAnimationCurrentFrame(currentFrame);
+      
       currentFrame++;
       if (currentFrame > animationTo) {
         currentFrame = animationFrom; // Loop
       }
-      setTimeIndex(currentFrame);
       
       if (isPlayingRef.current) {
         animationRef.current = setTimeout(animate, 1000 / animationFps);
@@ -991,7 +1047,7 @@ export default function Home() {
 
             {/* Period - Second */}
             <div className="dropdown-row" style={{ marginBottom: '15px' }}>
-              <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Period:</label>
+              <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Initial:</label>
               <select 
                 value={period}
                 onChange={(e) => setPeriod(e.target.value)}
@@ -1076,24 +1132,59 @@ export default function Home() {
             {/* Time - Fourth */}
             <div className="dropdown-row" style={{ marginBottom: '15px' }}>
               <label style={{ marginRight: '10px', fontWeight: 'bold' }}>Time:</label>
-              <select 
-                value={selectedTimeOption}
-                onChange={(e) => {
-                  const optionIdx = parseInt(e.target.value);
-                  setSelectedTimeOption(optionIdx);
-                  // Set timeIndex to the start of the selected range
-                  if (filteredTimeOptions[optionIdx]) {
-                    setTimeIndex(filteredTimeOptions[optionIdx].startIdx);
-                  }
-                }}
-                style={{ flex: 1 }}
-              >
-                {filteredTimeOptions.map((option, idx) => (
-                  <option key={idx} value={idx}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              {dataRange === 'daily' ? (
+                // Calendar date picker for daily view
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="date"
+                    value={(() => {
+                      // Get current selected date from availableTimes
+                      const currentTime = availableTimes[selectedTimeOption] || availableTimes[0];
+                      if (!currentTime) return '';
+                      return currentTime.split('T')[0]; // Extract YYYY-MM-DD
+                    })()}
+                    onChange={(e) => {
+                      const selectedDate = e.target.value;
+                      // Find the index of the selected date in availableTimes
+                      const idx = availableTimes.findIndex(time => time.startsWith(selectedDate));
+                      if (idx >= 0) {
+                        setSelectedTimeOption(idx);
+                        setTimeIndex(idx);
+                      }
+                    }}
+                    min={availableTimes[0]?.split('T')[0]}
+                    max={availableTimes[availableTimes.length - 1]?.split('T')[0]}
+                    style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      border: '1px solid #ccc',
+                      borderRadius: '4px',
+                      fontSize: '14px',
+                      cursor: 'pointer'
+                    }}
+                  />
+                </div>
+              ) : (
+                // Dropdown for 10-day and monthly views
+                <select 
+                  value={selectedTimeOption}
+                  onChange={(e) => {
+                    const optionIdx = parseInt(e.target.value);
+                    setSelectedTimeOption(optionIdx);
+                    // Set timeIndex to the start of the selected range
+                    if (filteredTimeOptions[optionIdx]) {
+                      setTimeIndex(filteredTimeOptions[optionIdx].startIdx);
+                    }
+                  }}
+                  style={{ flex: 1 }}
+                >
+                  {filteredTimeOptions.map((option, idx) => (
+                    <option key={idx} value={idx}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               {loading && <span style={{ marginLeft: '10px', color: '#666' }}>Loading...</span>}
             </div>
             
@@ -1114,9 +1205,9 @@ export default function Home() {
               fontSize: '14px'
             }}>
               <span style={{ fontWeight: 'bold', color: '#0000CD' }}>
-                {dataRange === 'daily' ? '📅 Daily Data' : 
-                 dataRange === '10day' ? '📊 10-Day Average' : 
-                 '📆 Monthly Average'}
+                {dataRange === 'daily' ? 'Daily Data' : 
+                 dataRange === '10day' ? '10-Day Average' : 
+                 'Monthly Average'}
               </span>
               {filteredTimeOptions[selectedTimeOption] && (
                 <span style={{ color: '#555', marginLeft: '10px' }}>
@@ -1161,7 +1252,7 @@ export default function Home() {
             <h4 style={{ marginBottom: '15px', color: '#333' }}>Animation Controls</h4>
             
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px', alignItems: 'center' }}>
-              {/* From Time */}
+              {/* From Time - based on data range */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#666' }}>From:</label>
                 <select
@@ -1170,13 +1261,13 @@ export default function Home() {
                   disabled={isPlaying}
                   style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '150px' }}
                 >
-                  {availableTimes.map((time, idx) => (
-                    <option key={idx} value={idx}>{formatTime(time)}</option>
+                  {filteredTimeOptions.map((option, idx) => (
+                    <option key={idx} value={idx}>{option.label}</option>
                   ))}
                 </select>
               </div>
 
-              {/* To Time */}
+              {/* To Time - based on data range */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
                 <label style={{ fontSize: '12px', fontWeight: 'bold', color: '#666' }}>To:</label>
                 <select
@@ -1185,8 +1276,8 @@ export default function Home() {
                   disabled={isPlaying}
                   style={{ padding: '8px', borderRadius: '5px', border: '1px solid #ccc', minWidth: '150px' }}
                 >
-                  {availableTimes.map((time, idx) => (
-                    <option key={idx} value={idx}>{formatTime(time)}</option>
+                  {filteredTimeOptions.map((option, idx) => (
+                    <option key={idx} value={idx}>{option.label}</option>
                   ))}
                 </select>
               </div>
@@ -1212,7 +1303,7 @@ export default function Home() {
               <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
                 <button
                   onClick={playAnimation}
-                  disabled={isPlaying || availableTimes.length === 0}
+                  disabled={isPlaying || filteredTimeOptions.length === 0}
                   style={{
                     padding: '10px 25px',
                     backgroundColor: isPlaying ? '#ccc' : '#28a745',
@@ -1226,7 +1317,7 @@ export default function Home() {
                     gap: '5px'
                   }}
                 >
-                  ▶ Play
+                  Play
                 </button>
                 <button
                   onClick={stopAnimation}
@@ -1244,7 +1335,7 @@ export default function Home() {
                     gap: '5px'
                   }}
                 >
-                  ⏹ Stop
+                  Stop
                 </button>
               </div>
             </div>
@@ -1288,8 +1379,8 @@ export default function Home() {
                   color: '#666',
                   marginBottom: '5px'
                 }}>
-                  <span>Frame: {timeIndex - animationFrom + 1} / {animationTo - animationFrom + 1}</span>
-                  <span>{formatTime(availableTimes[timeIndex])}</span>
+                  <span>Frame: {animationCurrentFrame - animationFrom + 1} / {animationTo - animationFrom + 1}</span>
+                  <span>{filteredTimeOptions[animationCurrentFrame]?.label || ''}</span>
                 </div>
                 <div style={{ 
                   height: '6px', 
@@ -1299,7 +1390,7 @@ export default function Home() {
                 }}>
                   <div style={{ 
                     height: '100%', 
-                    width: `${((timeIndex - animationFrom) / (animationTo - animationFrom)) * 100}%`,
+                    width: `${((animationCurrentFrame - animationFrom) / Math.max(animationTo - animationFrom, 1)) * 100}%`,
                     backgroundColor: '#0000CD',
                     transition: 'width 0.1s ease'
                   }}></div>

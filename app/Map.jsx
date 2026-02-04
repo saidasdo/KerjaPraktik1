@@ -80,9 +80,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const [showChartPopup, setShowChartPopup] = useState(false);
   const markerRef = useRef(null);
   const [clickMode, setClickMode] = useState('point'); // 'point' or 'region'
-  const provinceLayerRef = useRef(null);
-  const selectedProvinceRef = useRef(null);
-  const indonesiaGeoJsonRef = useRef(null);
+  const zomLayerRef = useRef(null);
+  const selectedZomRef = useRef(null);
+  const zomGeoJsonRef = useRef(null);
 
   // Convert dataRange to API mode
   const getApiMode = () => {
@@ -184,7 +184,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               geometry: sideWindow.data.geometry,
-              province_name: sideWindow.data.provinceName,
+              zom_name: sideWindow.data.zomName,
               period: period,
               mode: mode
             })
@@ -285,29 +285,29 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       maxZoom: 18  // Hide when zooming in beyond zoom 6
     }).addTo(map);
 
-    // Load Indonesia boundaries only (provinces + coastline)
+    // Load Indonesia boundaries (ZOM regions + coastline)
     // This gives us VECTOR lines with fixed stroke width regardless of zoom
     const loadIndonesiaBorders = async () => {
       try {
-        // Load Indonesia provinces GeoJSON (includes coastlines and province boundaries)
-        const response = await fetch('https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia.geojson');
+        // Load ZOM (Zona Musim) GeoJSON - climate zones from BMKG
+        const response = await fetch('/zom.geojson');
         const geojson = await response.json();
         
         // Store GeoJSON for later use
-        indonesiaGeoJsonRef.current = geojson;
+        zomGeoJsonRef.current = geojson;
         
-        // Add Indonesia provinces with fixed styling (border only layer - always visible)
+        // Add ZOM boundaries with fixed styling (border only layer - always visible)
         L.geoJSON(geojson, {
           pane: 'coastlinePane',
           style: {
             color: '#000000',      // Black color for borders
-            weight: 1.5,           // Fixed 1.5px width - consistent at all zoom levels
-            opacity: 1,            // Full opacity for clear visibility
+            weight: 0.8,           // Thinner for ZOM (more zones = more lines)
+            opacity: 0.7,          // Slightly transparent
             fill: false            // No fill, just borders
           }
         }).addTo(map);
         
-        console.log('✅ Indonesia borders loaded');
+        console.log('ZOM boundaries loaded (699 zones)');
       } catch (error) {
         console.error('Failed to load Indonesia borders:', error);
         // Fallback: try loading just Indonesia from world countries
@@ -325,7 +325,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             )
           };
           
-          indonesiaGeoJsonRef.current = indonesiaOnly;
+          zomGeoJsonRef.current = indonesiaOnly;
           
           L.geoJSON(indonesiaOnly, {
             pane: 'coastlinePane',
@@ -337,7 +337,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             }
           }).addTo(map);
           
-          console.log('✅ Indonesia borders loaded (fallback)');
+          console.log('Indonesia borders loaded (fallback)');
         } catch (fallbackError) {
           console.error('All border loading failed:', fallbackError);
         }
@@ -379,53 +379,58 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     // Fit the map view to show the entire precipitation layer
     map.fitBounds(dataBounds, { padding: [20, 20] });
     
-    console.log('📍 Map centered on precipitation bounds:', bounds);
+    console.log('Map centered on precipitation bounds:', bounds);
   }, [precipData]);
 
-  // Create/update clickable province layer when mode changes
+  // Create/update clickable ZOM layer when mode changes
   useEffect(() => {
-    if (!mapInstanceRef.current || !indonesiaGeoJsonRef.current) return;
+    if (!mapInstanceRef.current || !zomGeoJsonRef.current) return;
     
     const L = require('leaflet');
     const map = mapInstanceRef.current;
     
-    // Remove existing province layer if any
-    if (provinceLayerRef.current) {
-      map.removeLayer(provinceLayerRef.current);
-      provinceLayerRef.current = null;
+    // Remove existing ZOM layer if any
+    if (zomLayerRef.current) {
+      map.removeLayer(zomLayerRef.current);
+      zomLayerRef.current = null;
     }
     
-    // Remove selected province highlight
-    if (selectedProvinceRef.current) {
-      map.removeLayer(selectedProvinceRef.current);
-      selectedProvinceRef.current = null;
+    // Remove selected ZOM highlight
+    if (selectedZomRef.current) {
+      map.removeLayer(selectedZomRef.current);
+      selectedZomRef.current = null;
     }
     
     // Only create clickable layer in region mode
     if (clickMode === 'region') {
-      const geojson = indonesiaGeoJsonRef.current;
+      const geojson = zomGeoJsonRef.current;
       
-      provinceLayerRef.current = L.geoJSON(geojson, {
+      zomLayerRef.current = L.geoJSON(geojson, {
         style: {
           color: '#3388ff',
-          weight: 2,
+          weight: 1.5,
           opacity: 0.6,
           fillColor: '#3388ff',
           fillOpacity: 0.1
         },
         onEachFeature: (feature, layer) => {
-          // Get province name from properties
-          const provinceName = feature.properties.state || 
-                               feature.properties.name || 
-                               feature.properties.NAME_1 ||
-                               feature.properties.PROVINSI ||
-                               'Unknown Province';
+          // Get ZOM info from properties
+          const props = feature.properties;
+          const zomId = props.NOZOM_PROV || props.NOZONA_LAM || `ZOM ${props.NOZOM_NAS}`;
+          const province = props.PROV || '';
+          const island = props.PULAU || '';
+          const climateType = props.TIPE_UMUM || '';
+          const seasonType = props.TIPE_MUSIM || '';
           
-          // Bind tooltip with province name (shown on hover)
-          layer.bindTooltip(provinceName, {
+          // Create display name
+          const zomName = `${zomId} (${province})`;
+          const tooltipContent = `<b>${zomId}</b><br/>${province}, ${island}<br/>${climateType} - ${seasonType}`;
+          
+          // Bind tooltip with ZOM info (shown on hover)
+          layer.bindTooltip(tooltipContent, {
             permanent: false,
             direction: 'top',
-            className: 'province-tooltip',
+            className: 'zom-tooltip',
             offset: [0, -10]
           });
           
@@ -433,7 +438,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           layer.on('mouseover', function() {
             this.setStyle({
               fillOpacity: 0.3,
-              weight: 3
+              weight: 2.5
             });
             this.openTooltip();
           });
@@ -441,12 +446,12 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           layer.on('mouseout', function() {
             this.setStyle({
               fillOpacity: 0.1,
-              weight: 2
+              weight: 1.5
             });
             this.closeTooltip();
           });
           
-          // Click handler for province
+          // Click handler for ZOM
           layer.on('click', async function(e) {
             L.DomEvent.stopPropagation(e);
             
@@ -456,13 +461,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               markerRef.current = null;
             }
             
-            // Remove old selected province highlight
-            if (selectedProvinceRef.current) {
-              map.removeLayer(selectedProvinceRef.current);
+            // Remove old selected ZOM highlight
+            if (selectedZomRef.current) {
+              map.removeLayer(selectedZomRef.current);
             }
             
-            // Highlight selected province
-            selectedProvinceRef.current = L.geoJSON(feature, {
+            // Highlight selected ZOM
+            selectedZomRef.current = L.geoJSON(feature, {
               style: {
                 color: '#ff7800',
                 weight: 3,
@@ -483,7 +488,12 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   geometry: feature.geometry,
-                  province_name: provinceName,
+                  zom_name: zomName,
+                  zom_id: zomId,
+                  province: province,
+                  island: island,
+                  climate_type: climateType,
+                  season_type: seasonType,
                   period: period,
                   mode: mode
                 })
@@ -497,7 +507,12 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                   loading: false,
                   data: {
                     isRegion: true,
-                    provinceName: provinceName,
+                    zomName: zomName,
+                    zomId: zomId,
+                    province: province,
+                    island: island,
+                    climateType: climateType,
+                    seasonType: seasonType,
                     geometry: feature.geometry,  // Store geometry for refresh
                     numGridPoints: regionData.num_grid_points,
                     timeSeriesData: regionData,
@@ -524,13 +539,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         }
       }).addTo(map);
       
-      console.log('✅ Clickable province layer created');
+      console.log('Clickable ZOM layer created (699 zones)');
     }
     
     return () => {
-      if (provinceLayerRef.current) {
-        map.removeLayer(provinceLayerRef.current);
-        provinceLayerRef.current = null;
+      if (zomLayerRef.current) {
+        map.removeLayer(zomLayerRef.current);
+        zomLayerRef.current = null;
       }
     };
   }, [clickMode, period, dataRange]);
@@ -554,10 +569,10 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         map.removeLayer(markerRef.current);
       }
       
-      // Remove selected province highlight if any
-      if (selectedProvinceRef.current) {
-        map.removeLayer(selectedProvinceRef.current);
-        selectedProvinceRef.current = null;
+      // Remove selected ZOM highlight if any
+      if (selectedZomRef.current) {
+        map.removeLayer(selectedZomRef.current);
+        selectedZomRef.current = null;
       }
 
       // Set loading state for side window
@@ -658,12 +673,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           position: 'fixed',
           top: '0',
           right: '0',
-          width: '400px',
+          width: '100%',
+          maxWidth: '400px',
           height: '100vh',
           background: 'white',
           boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
           zIndex: 2000,
-          padding: '20px',
+          padding: '15px',
           overflowY: 'auto',
           fontFamily: 'Arial, sans-serif'
         }}>
@@ -671,7 +687,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>Error</h2>
             <button 
               onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
-              style={{ background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px' }}
+              style={{ background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', padding: '8px 16px', cursor: 'pointer', fontSize: '14px' }}
             >Close</button>
           </div>
           <div style={{ color: '#f44336', padding: '20px', background: '#ffebee', borderRadius: '5px' }}>
@@ -686,17 +702,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         position: 'fixed',
         top: '0',
         right: '0',
-        width: '400px',
+        width: '100%',
+        maxWidth: '400px',
         height: '100vh',
         background: 'white',
         boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
         zIndex: 2000,
-        padding: '20px',
+        padding: '15px',
         overflowY: 'auto',
         fontFamily: 'Arial, sans-serif'
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+          <h2 style={{ margin: 0, fontSize: '16px', color: '#333' }}>
             {sideWindow.data?.isRegion ? 'Regional Data' : 'Location Details'}
           </h2>
           <button 
@@ -706,9 +723,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               color: 'white',
               border: 'none',
               borderRadius: '3px',
-              padding: '5px 10px',
+              padding: '8px 16px',
               cursor: 'pointer',
-              fontSize: '12px'
+              fontSize: '14px'
             }}
           >
             Close
@@ -727,13 +744,21 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             {/* Basic Information - Different for Region vs Point */}
             <div style={{ marginBottom: '25px', padding: '15px', background: sideWindow.data.isRegion ? '#fff3e0' : '#f8f9fa', borderRadius: '5px' }}>
               <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#2c3e50' }}>
-                {sideWindow.data.isRegion ? '🗺️ Province Information' : 'Basic Information'}
+                {sideWindow.data.isRegion ? 'Zona Musim (ZOM)' : 'Basic Information'}
               </h3>
               <div style={{ fontSize: '14px', lineHeight: '1.6' }}>
                 {sideWindow.data.isRegion ? (
                   <>
+                    <strong>ZOM ID:</strong><br/>
+                    {sideWindow.data.zomId}<br/><br/>
                     <strong>Province:</strong><br/>
-                    {sideWindow.data.provinceName}<br/><br/>
+                    {sideWindow.data.province}<br/><br/>
+                    <strong>Island:</strong><br/>
+                    {sideWindow.data.island}<br/><br/>
+                    <strong>Climate Type:</strong><br/>
+                    {sideWindow.data.climateType}<br/><br/>
+                    <strong>Season Type:</strong><br/>
+                    {sideWindow.data.seasonType}<br/><br/>
                     <strong>Grid Points:</strong><br/>
                     {sideWindow.data.numGridPoints} data points averaged<br/><br/>
                     {sideWindow.data.processingTime && (
@@ -812,7 +837,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                     borderRadius: '3px',
                     zIndex: 10
                   }}>
-                    🔍 Click to enlarge
+                    Click to enlarge
                   </div>
                   {sideWindow.data.timeSeriesData.time_series.length > 0 ? (
                     <Line
@@ -954,46 +979,46 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     <div style={{
       position: 'absolute',
       top: '10px',
-      left: '60px',
+      left: '50px',
       zIndex: 1000,
       background: 'white',
       borderRadius: '8px',
       boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-      padding: '8px',
+      padding: '6px',
       display: 'flex',
       gap: '4px'
     }}>
       <button
         onClick={() => setClickMode('point')}
         style={{
-          padding: '8px 16px',
+          padding: '6px 12px',
           border: 'none',
           borderRadius: '6px',
           cursor: 'pointer',
           fontWeight: clickMode === 'point' ? 'bold' : 'normal',
           background: clickMode === 'point' ? '#2196F3' : '#e0e0e0',
           color: clickMode === 'point' ? 'white' : '#333',
-          fontSize: '13px',
+          fontSize: '12px',
           transition: 'all 0.2s'
         }}
       >
-        📍 Point
+        Point
       </button>
       <button
         onClick={() => setClickMode('region')}
         style={{
-          padding: '8px 16px',
+          padding: '6px 12px',
           border: 'none',
           borderRadius: '6px',
           cursor: 'pointer',
           fontWeight: clickMode === 'region' ? 'bold' : 'normal',
           background: clickMode === 'region' ? '#ff7800' : '#e0e0e0',
           color: clickMode === 'region' ? 'white' : '#333',
-          fontSize: '13px',
+          fontSize: '12px',
           transition: 'all 0.2s'
         }}
       >
-        🗺️ Province
+        ZOM
       </button>
     </div>
   );
@@ -1002,7 +1027,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     <div style={{ position: 'relative' }}>
       <div 
         ref={mapRef} 
-        style={{ height: '600px', width: '100%', marginTop: '20px' }}
+        style={{ height: '600px', width: '100%', marginTop: '20px', minHeight: '400px' }}
       />
       {mapReady && precipData && (
         <>
@@ -1032,7 +1057,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '20px'
+            padding: '10px'
           }}
         >
           <div 
@@ -1040,13 +1065,15 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             style={{
               background: 'white',
               borderRadius: '10px',
-              width: '90vw',
+              width: '95vw',
               maxWidth: '1200px',
-              height: '80vh',
+              height: '90vh',
               maxHeight: '700px',
-              padding: '25px',
+              padding: '15px',
               position: 'relative',
-              boxShadow: '0 10px 50px rgba(0,0,0,0.3)'
+              boxShadow: '0 10px 50px rgba(0,0,0,0.3)',
+              display: 'flex',
+              flexDirection: 'column'
             }}
           >
             {/* Close button */}
@@ -1054,8 +1081,8 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               onClick={() => setShowChartPopup(false)}
               style={{
                 position: 'absolute',
-                top: '15px',
-                right: '15px',
+                top: '10px',
+                right: '10px',
                 background: '#f44336',
                 color: 'white',
                 border: 'none',
@@ -1074,18 +1101,21 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             </button>
             
             {/* Header */}
-            <div style={{ marginBottom: '20px' }}>
-              <h2 style={{ margin: 0, fontSize: '20px', color: '#2c3e50' }}>
+            <div style={{ marginBottom: '15px', paddingRight: '40px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', color: '#2c3e50' }}>
                 {sideWindow.data.isRegion 
-                  ? `📊 Regional Time Series - ${sideWindow.data.provinceName}`
-                  : `📊 Time Series - ${sideWindow.data.locationName || 'Selected Location'}`
+                  ? `ZOM Time Series - ${sideWindow.data.zomId}`
+                  : `Time Series - ${sideWindow.data.locationName || 'Selected Location'}`
                 }
               </h2>
-              <div style={{ fontSize: '14px', color: '#666', marginTop: '8px' }}>
+              <div style={{ fontSize: '12px', color: '#666', marginTop: '6px' }}>
+                {sideWindow.data.isRegion && (
+                  <>{sideWindow.data.province}, {sideWindow.data.island} | {sideWindow.data.climateType}<br/></>
+                )}
                 Period: {period} | Range: {dataRange === 'daily' ? 'Daily' : dataRange === '10day' ? '10-Day' : 'Monthly'}
                 {sideWindow.data.isRegion && ` | ${sideWindow.data.numGridPoints} grid points averaged`}
               </div>
-              <div style={{ fontSize: '13px', color: '#888', marginTop: '4px', display: 'flex', gap: '20px' }}>
+              <div style={{ fontSize: '11px', color: '#888', marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
                 <span>Min: {sideWindow.data.timeSeriesData.statistics.min} mm</span>
                 <span>Max: {sideWindow.data.timeSeriesData.statistics.max} mm</span>
                 <span>Mean: {sideWindow.data.timeSeriesData.statistics.mean} mm</span>
@@ -1096,7 +1126,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             </div>
             
             {/* Large Chart */}
-            <div style={{ height: 'calc(100% - 100px)' }}>
+            <div style={{ flex: 1, minHeight: 0 }}>
               <Line
                 data={{
                   labels: sideWindow.data.timeSeriesData.time_series.map(item => {

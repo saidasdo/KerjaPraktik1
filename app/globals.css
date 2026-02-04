@@ -197,17 +197,119 @@ button:active {
 }
 
 @media (max-width: 768px) {
+  body {
+    padding: 10px;
+  }
+
+  .app {
+    padding: 15px;
+    border-radius: 6px;
+  }
+
+  h1 {
+    font-size: 20px;
+    padding-bottom: 8px;
+  }
+
+  h3 {
+    font-size: 14px;
+  }
+
+  h4 {
+    font-size: 13px;
+  }
+
   .dropdown-row {
     flex-direction: column;
     align-items: stretch;
+    gap: 8px;
   }
 
   select {
     width: 100%;
+    padding: 10px 12px;
+    font-size: 16px; /* Prevent zoom on iOS */
+  }
+
+  input[type="date"] {
+    width: 100%;
+    padding: 10px 12px;
+    font-size: 16px; /* Prevent zoom on iOS */
   }
 
   button {
     width: 100%;
+    padding: 12px 20px;
+    font-size: 14px;
+  }
+
+  .image-section {
+    padding-left: 0;
+  }
+
+  /* Animation controls responsive */
+  .animation-controls {
+    padding: 12px !important;
+  }
+
+  .animation-controls > div {
+    flex-direction: column !important;
+    gap: 12px !important;
+  }
+
+  .animation-controls select {
+    min-width: 100% !important;
+  }
+
+  .animation-controls button {
+    flex: 1;
+    min-width: 100px;
+  }
+
+  /* Info box responsive */
+  .map-display > div[style*="backgroundColor: #f0f8ff"] {
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+  }
+
+  /* View mode toggle responsive */
+  .control-group > div[style*="backgroundColor: #0000CD"] button {
+    padding: 8px 12px !important;
+    font-size: 13px !important;
+  }
+
+  /* Data range toggle responsive */
+  .control-group > div > div[style*="backgroundColor: #e0e0e0"] button {
+    padding: 6px 8px !important;
+    font-size: 12px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  body {
+    padding: 5px;
+  }
+
+  .app {
+    padding: 10px;
+  }
+
+  h1 {
+    font-size: 18px;
+  }
+
+  .dropdown-row {
+    gap: 6px;
+  }
+
+  /* Stack animation control buttons */
+  .animation-controls > div > div:last-child {
+    flex-direction: column !important;
+    width: 100%;
+  }
+
+  .animation-controls > div > div:last-child button {
+    width: 100% !important;
   }
 }
 
@@ -225,4 +327,46 @@ button:active {
 
 .province-tooltip::before {
   border-top-color: rgba(0, 0, 0, 0.8) !important;
+}
+
+/* Map container responsive */
+.map-display {
+  width: 100%;
+}
+
+/* Leaflet container responsive */
+.leaflet-container {
+  width: 100% !important;
+}
+
+@media (max-width: 768px) {
+  /* Map height adjustment for mobile */
+  .leaflet-container {
+    height: 400px !important;
+  }
+
+  /* Color legend responsive */
+  .leaflet-container + div[style*="position: absolute"][style*="bottom"] {
+    font-size: 9px !important;
+    padding: 6px !important;
+    bottom: 20px !important;
+    right: 5px !important;
+  }
+
+  /* Side window responsive for mobile */
+  div[style*="position: absolute"][style*="right: 10px"][style*="top: 60px"] {
+    width: calc(100% - 20px) !important;
+    max-width: 100% !important;
+    left: 10px !important;
+    right: 10px !important;
+    top: auto !important;
+    bottom: 10px !important;
+    max-height: 40vh !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .leaflet-container {
+    height: 350px !important;
+  }
 }
