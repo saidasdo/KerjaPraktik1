@@ -307,7 +307,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           }
         }).addTo(map);
         
-        console.log('✅ ZOM boundaries loaded (699 zones)');
+        console.log('ZOM boundaries loaded (699 zones)');
       } catch (error) {
         console.error('Failed to load Indonesia borders:', error);
         // Fallback: try loading just Indonesia from world countries
@@ -337,7 +337,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             }
           }).addTo(map);
           
-          console.log('✅ Indonesia borders loaded (fallback)');
+          console.log('Indonesia borders loaded (fallback)');
         } catch (fallbackError) {
           console.error('All border loading failed:', fallbackError);
         }
@@ -379,7 +379,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     // Fit the map view to show the entire precipitation layer
     map.fitBounds(dataBounds, { padding: [20, 20] });
     
-    console.log('📍 Map centered on precipitation bounds:', bounds);
+    console.log('Map centered on precipitation bounds:', bounds);
   }, [precipData]);
 
   // Create/update clickable ZOM layer when mode changes
@@ -539,7 +539,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         }
       }).addTo(map);
       
-      console.log('✅ Clickable ZOM layer created (699 zones)');
+      console.log('Clickable ZOM layer created (699 zones)');
     }
     
     return () => {
@@ -673,12 +673,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           position: 'fixed',
           top: '0',
           right: '0',
-          width: '400px',
+          width: '100%',
+          maxWidth: '400px',
           height: '100vh',
           background: 'white',
           boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
           zIndex: 2000,
-          padding: '20px',
+          padding: '15px',
           overflowY: 'auto',
           fontFamily: 'Arial, sans-serif'
         }}>
@@ -686,7 +687,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>Error</h2>
             <button 
               onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
-              style={{ background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', padding: '5px 10px', cursor: 'pointer', fontSize: '12px' }}
+              style={{ background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', padding: '8px 16px', cursor: 'pointer', fontSize: '14px' }}
             >Close</button>
           </div>
           <div style={{ color: '#f44336', padding: '20px', background: '#ffebee', borderRadius: '5px' }}>
@@ -701,17 +702,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         position: 'fixed',
         top: '0',
         right: '0',
-        width: '400px',
+        width: '100%',
+        maxWidth: '400px',
         height: '100vh',
         background: 'white',
         boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
         zIndex: 2000,
-        padding: '20px',
+        padding: '15px',
         overflowY: 'auto',
         fontFamily: 'Arial, sans-serif'
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-          <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+          <h2 style={{ margin: 0, fontSize: '16px', color: '#333' }}>
             {sideWindow.data?.isRegion ? 'Regional Data' : 'Location Details'}
           </h2>
           <button 
@@ -721,9 +723,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               color: 'white',
               border: 'none',
               borderRadius: '3px',
-              padding: '5px 10px',
+              padding: '8px 16px',
               cursor: 'pointer',
-              fontSize: '12px'
+              fontSize: '14px'
             }}
           >
             Close
@@ -742,7 +744,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             {/* Basic Information - Different for Region vs Point */}
             <div style={{ marginBottom: '25px', padding: '15px', background: sideWindow.data.isRegion ? '#fff3e0' : '#f8f9fa', borderRadius: '5px' }}>
               <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#2c3e50' }}>
-                {sideWindow.data.isRegion ? '🗺️ Zona Musim (ZOM)' : 'Basic Information'}
+                {sideWindow.data.isRegion ? 'Zona Musim (ZOM)' : 'Basic Information'}
               </h3>
               <div style={{ fontSize: '14px', lineHeight: '1.6' }}>
                 {sideWindow.data.isRegion ? (
@@ -835,7 +837,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                     borderRadius: '3px',
                     zIndex: 10
                   }}>
-                    🔍 Click to enlarge
+                    Click to enlarge
                   </div>
                   {sideWindow.data.timeSeriesData.time_series.length > 0 ? (
                     <Line
@@ -977,46 +979,46 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     <div style={{
       position: 'absolute',
       top: '10px',
-      left: '60px',
+      left: '50px',
       zIndex: 1000,
       background: 'white',
       borderRadius: '8px',
       boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-      padding: '8px',
+      padding: '6px',
       display: 'flex',
       gap: '4px'
     }}>
       <button
         onClick={() => setClickMode('point')}
         style={{
-          padding: '8px 16px',
+          padding: '6px 12px',
           border: 'none',
           borderRadius: '6px',
           cursor: 'pointer',
           fontWeight: clickMode === 'point' ? 'bold' : 'normal',
           background: clickMode === 'point' ? '#2196F3' : '#e0e0e0',
           color: clickMode === 'point' ? 'white' : '#333',
-          fontSize: '13px',
+          fontSize: '12px',
           transition: 'all 0.2s'
         }}
       >
-        📍 Point
+        Point
       </button>
       <button
         onClick={() => setClickMode('region')}
         style={{
-          padding: '8px 16px',
+          padding: '6px 12px',
           border: 'none',
           borderRadius: '6px',
           cursor: 'pointer',
           fontWeight: clickMode === 'region' ? 'bold' : 'normal',
           background: clickMode === 'region' ? '#ff7800' : '#e0e0e0',
           color: clickMode === 'region' ? 'white' : '#333',
-          fontSize: '13px',
+          fontSize: '12px',
           transition: 'all 0.2s'
         }}
       >
-        🗺️ ZOM
+        ZOM
       </button>
     </div>
   );
@@ -1025,7 +1027,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     <div style={{ position: 'relative' }}>
       <div 
         ref={mapRef} 
-        style={{ height: '600px', width: '100%', marginTop: '20px' }}
+        style={{ height: '600px', width: '100%', marginTop: '20px', minHeight: '400px' }}
       />
       {mapReady && precipData && (
         <>
@@ -1055,7 +1057,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '20px'
+            padding: '10px'
           }}
         >
           <div 
@@ -1063,13 +1065,15 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             style={{
               background: 'white',
               borderRadius: '10px',
-              width: '90vw',
+              width: '95vw',
               maxWidth: '1200px',
-              height: '80vh',
+              height: '90vh',
               maxHeight: '700px',
-              padding: '25px',
+              padding: '15px',
               position: 'relative',
-              boxShadow: '0 10px 50px rgba(0,0,0,0.3)'
+              boxShadow: '0 10px 50px rgba(0,0,0,0.3)',
+              display: 'flex',
+              flexDirection: 'column'
             }}
           >
             {/* Close button */}
@@ -1077,8 +1081,8 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               onClick={() => setShowChartPopup(false)}
               style={{
                 position: 'absolute',
-                top: '15px',
-                right: '15px',
+                top: '10px',
+                right: '10px',
                 background: '#f44336',
                 color: 'white',
                 border: 'none',
@@ -1097,21 +1101,21 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             </button>
             
             {/* Header */}
-            <div style={{ marginBottom: '20px' }}>
-              <h2 style={{ margin: 0, fontSize: '20px', color: '#2c3e50' }}>
+            <div style={{ marginBottom: '15px', paddingRight: '40px' }}>
+              <h2 style={{ margin: 0, fontSize: '18px', color: '#2c3e50' }}>
                 {sideWindow.data.isRegion 
-                  ? `📊 ZOM Time Series - ${sideWindow.data.zomId}`
-                  : `📊 Time Series - ${sideWindow.data.locationName || 'Selected Location'}`
+                  ? `ZOM Time Series - ${sideWindow.data.zomId}`
+                  : `Time Series - ${sideWindow.data.locationName || 'Selected Location'}`
                 }
               </h2>
-              <div style={{ fontSize: '14px', color: '#666', marginTop: '8px' }}>
+              <div style={{ fontSize: '12px', color: '#666', marginTop: '6px' }}>
                 {sideWindow.data.isRegion && (
                   <>{sideWindow.data.province}, {sideWindow.data.island} | {sideWindow.data.climateType}<br/></>
                 )}
                 Period: {period} | Range: {dataRange === 'daily' ? 'Daily' : dataRange === '10day' ? '10-Day' : 'Monthly'}
                 {sideWindow.data.isRegion && ` | ${sideWindow.data.numGridPoints} grid points averaged`}
               </div>
-              <div style={{ fontSize: '13px', color: '#888', marginTop: '4px', display: 'flex', gap: '20px' }}>
+              <div style={{ fontSize: '11px', color: '#888', marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
                 <span>Min: {sideWindow.data.timeSeriesData.statistics.min} mm</span>
                 <span>Max: {sideWindow.data.timeSeriesData.statistics.max} mm</span>
                 <span>Mean: {sideWindow.data.timeSeriesData.statistics.mean} mm</span>
@@ -1122,7 +1126,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             </div>
             
             {/* Large Chart */}
-            <div style={{ height: 'calc(100% - 100px)' }}>
+            <div style={{ flex: 1, minHeight: 0 }}>
               <Line
                 data={{
                   labels: sideWindow.data.timeSeriesData.time_series.map(item => {
