@@ -176,6 +176,20 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       setSideWindow(prev => ({ ...prev, loading: true }));
       const mode = getApiMode();
       
+      // Update current precipitation for point mode
+      if (!sideWindow.data.isRegion && sideWindow.data.lat && sideWindow.data.lng) {
+        const lat = parseFloat(sideWindow.data.lat);
+        const lng = parseFloat(sideWindow.data.lng);
+        const newPrecip = getPrecipitationAt(lat, lng);
+        setSideWindow(prev => ({
+          ...prev,
+          data: {
+            ...prev.data,
+            currentPrecip: newPrecip ? newPrecip.toFixed(2) : null
+          }
+        }));
+      }
+      
       if (sideWindow.data.isRegion && sideWindow.data.geometry) {
         // Refresh region data
         try {
@@ -235,7 +249,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     };
     
     refreshData();
-  }, [period, dataRange]);
+  }, [period, dataRange, precipData]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -699,18 +713,16 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
 
     return (
       <div style={{
-        position: 'fixed',
-        top: '0',
-        right: '0',
-        width: '100%',
-        maxWidth: '400px',
-        height: '100vh',
+        width: '400px',
+        minWidth: '350px',
+        maxWidth: '450px',
+        height: '100%',
         background: 'white',
-        boxShadow: '-2px 0 10px rgba(0,0,0,0.1)',
-        zIndex: 2000,
+        borderLeft: '2px solid #ddd',
         padding: '15px',
         overflowY: 'auto',
-        fontFamily: 'Arial, sans-serif'
+        fontFamily: 'Arial, sans-serif',
+        flexShrink: 0
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
           <h2 style={{ margin: 0, fontSize: '16px', color: '#333' }}>
@@ -1024,23 +1036,28 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   );
 
   return (
-    <div style={{ position: 'relative' }}>
-      <div 
-        ref={mapRef} 
-        style={{ height: '600px', width: '100%', marginTop: '20px', minHeight: '400px' }}
-      />
-      {mapReady && precipData && (
-        <>
-          <PrecipitationLayerWebGL 
-            map={mapInstanceRef.current} 
-            data={precipData}
-            opacity={0.8}
-          />
-          <ColorLegend stats={precipData.stats} />
-          <ModeToggle />
-        </>
-      )}
-      <SideWindow />
+    <div style={{ display: 'flex', position: 'relative', height: '620px' }}>
+      {/* Map Container */}
+      <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+        <div 
+          ref={mapRef} 
+          style={{ height: '100%', width: '100%', minHeight: '400px' }}
+        />
+        {mapReady && precipData && (
+          <>
+            <PrecipitationLayerWebGL 
+              map={mapInstanceRef.current} 
+              data={precipData}
+              opacity={0.8}
+            />
+            <ColorLegend stats={precipData.stats} />
+            <ModeToggle />
+          </>
+        )}
+      </div>
+      
+      {/* Side Panel - shown when clicked */}
+      {sideWindow.visible && <SideWindow />}
       
       {/* Time Series Popup Modal */}
       {showChartPopup && sideWindow.data?.timeSeriesData && (
