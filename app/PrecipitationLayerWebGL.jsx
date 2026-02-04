@@ -21,6 +21,7 @@ const FRAGMENT_SHADER = `
   uniform sampler2D u_data;
   uniform vec2 u_dataSize;
   uniform float u_opacity;
+  uniform float u_maxPrecip; 
   
   // Solid color bands based on precipitation ranges (mm)
   vec3 colormap(float t) {
@@ -29,27 +30,27 @@ const FRAGMENT_SHADER = `
     
     // Map normalized value back to precipitation amount (0-500+ mm scale)
     // Assuming max value of 500mm for the upper bound
-    float precip = t * 500.0;
+    float precip = t * u_maxPrecip;
     
     // Solid color bands
-    if (precip < 20.0) {
-      return vec3(0.204, 0.039, 0.0);     // #340A00 - 0-20mm
-    } else if (precip < 50.0) {
-      return vec3(0.557, 0.157, 0.0);     // #8E2800 - 20-50mm
-    } else if (precip < 100.0) {
-      return vec3(0.863, 0.384, 0.0);     // #DC6200 - 50-100mm
-    } else if (precip < 150.0) {
-      return vec3(0.937, 0.655, 0.0);     // #EFA700 - 100-150mm
-    } else if (precip < 200.0) {
-      return vec3(0.922, 0.882, 0.0);     // #EBE100 - 150-200mm
-    } else if (precip < 300.0) {
-      return vec3(0.878, 0.992, 0.408);   // #E0FD68 - 200-300mm
-    } else if (precip < 400.0) {
-      return vec3(0.541, 0.835, 0.545);   // #8AD58B - 300-400mm
-    } else if (precip < 500.0) {
-      return vec3(0.212, 0.569, 0.208);   // #369135 - 400-500mm
-    } else {
-      return vec3(0.0, 0.275, 0.047);     // #00460C - >500mm
+    if (t < 0.04) {          // 0-4% of max
+      return vec3(0.204, 0.039, 0.0);     // #340A00
+    } else if (t < 0.10) {   // 4-10% of max
+      return vec3(0.557, 0.157, 0.0);     // #8E2800
+    } else if (t < 0.20) {   // 10-20% of max
+      return vec3(0.863, 0.384, 0.0);     // #DC6200
+    } else if (t < 0.30) {   // 20-30% of max
+      return vec3(0.937, 0.655, 0.0);     // #EFA700
+    } else if (t < 0.40) {   // 30-40% of max
+      return vec3(0.922, 0.882, 0.0);     // #EBE100
+    } else if (t < 0.55) {   // 40-55% of max
+      return vec3(0.878, 0.992, 0.408);   // #E0FD68
+    } else if (t < 0.70) {   // 55-70% of max
+      return vec3(0.541, 0.835, 0.545);   // #8AD58B
+    } else if (t < 0.85) {   // 70-85% of max
+      return vec3(0.212, 0.569, 0.208);   // #369135
+    } else {                 // 85-100%+ (darkest green gets larger range)
+      return vec3(0.0, 0.275, 0.047);     // #00460C
     }
   }
   
@@ -211,12 +212,22 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
         // Normalize to 0-1 using effective max (p99)
         const normalized01 = Math.min(1, value / effectiveMax);
         
-        // Apply square root (gamma 0.5) for better distribution
-        // This expands the low values and compresses high values
-        const gammaCorrected = Math.sqrt(normalized01);
-        
-        // Convert to 0-255
-        const normalizedValue = Math.round(gammaCorrected * 255);
+        ///versi 1///
+        //const gammaCorrected = Math.sqrt(normalized01);
+  
+
+        ///versi2///
+        const base = Math.log1p(normalized01 * 10) / Math.log1p(10);
+        const threshold = 0.2; 
+        const multiplier = 1.8; 
+        let gammaCorrected;
+        if (base < threshold) {
+          gammaCorrected = base; 
+        } else {
+          gammaCorrected = threshold + (base - threshold) * multiplier;
+        }
+
+        const normalizedValue = Math.round(Math.min(1, gammaCorrected) * 255);
         
         textureData[texIdx] = normalizedValue;     // R: normalized value (0-255)
         textureData[texIdx + 1] = 0;               // G: unused
@@ -258,6 +269,7 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   gl.uniform1i(gl.getUniformLocation(program, 'u_data'), 0);
   gl.uniform2f(gl.getUniformLocation(program, 'u_dataSize'), width, height);
   gl.uniform1f(gl.getUniformLocation(program, 'u_opacity'), opacity);
+  gl.uniform1f(gl.getUniformLocation(program, 'u_maxPrecip'), effectiveMax);
   
   // Clear and draw
   gl.viewport(0, 0, canvas.width, canvas.height);

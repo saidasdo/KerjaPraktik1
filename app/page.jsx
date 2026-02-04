@@ -505,22 +505,29 @@ export default function Home() {
     }
   }, [availableTimes, dataRange]);
 
-  // Generate PNG from precipitation data (matching matplotlib style)
+  // Generate PNG from precipitation data (BMKG style)
   const generatePNG = async (data) => {
     if (!data || !data.lat || !data.lon || !data.values) return null;
 
-    const { lat, lon, values, stats, bounds } = data;
+    const { lat, lon, values, stats, bounds: dataBoundsOriginal } = data;
+    
+    // Use tighter bounds focused on Indonesia (crop extra ocean space)
+    const bounds = {
+      minLat: -12,   // Southern tip of Indonesia
+      maxLat: 7,     // Northern Aceh
+      minLon: 94,    // Western Sumatra
+      maxLon: 142    // Eastern Papua
+    };
     
     // Calculate proper aspect ratio based on geographic bounds
-    // Indonesia: ~46° longitude, ~17° latitude = ~2.7:1 ratio
     const geoAspectRatio = (bounds.maxLon - bounds.minLon) / (bounds.maxLat - bounds.minLat);
     
-    // Set canvas size based on geographic aspect ratio
+    // Set canvas size - BMKG style layout (larger for more zoom)
     const dpi = 150;
-    const baseWidth = 18 * dpi;  // 2700px base width
+    const baseWidth = 20 * dpi;  // 4000px base width for more detail
     const width = baseWidth;
-    const height = Math.round(baseWidth / geoAspectRatio) + 180; // Add space for padding
-    const padding = { left: 80, right: 160, top: 80, bottom: 100 };
+    const height = Math.round(baseWidth / geoAspectRatio) + 350; // More space for title and colorbar
+    const padding = { left: 100, right: 50, top: 140, bottom: 210 }; // Adjusted padding
     
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -546,24 +553,27 @@ export default function Home() {
       return { x, y };
     };
 
-    // Draw tiles from cache (label-free basemap - only coastlines and borders)
+    // Clip all map content to the map area (white rectangle)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(padding.left, padding.top, mapWidth, mapHeight);
+    ctx.clip();
+
+    // Draw tiles from cache (label-free basemap)
     const zoom = 6;
     const { minTileX, maxTileX, minTileY, maxTileY } = getTileCoordinates(bounds, zoom);
     
-    // Draw tiles from cache (instant - no network requests!)
     for (let x = minTileX; x <= maxTileX; x++) {
       for (let y = minTileY; y <= maxTileY; y++) {
         const img = getCachedTile(x, y, zoom);
         if (!img) continue;
         
-        // Convert tile coordinates to lat/lon bounds
         const n = Math.pow(2, zoom);
         const tileLonMin = x / n * 360 - 180;
         const tileLonMax = (x + 1) / n * 360 - 180;
         const tileLatMax = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
         const tileLatMin = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
         
-        // Convert to canvas coordinates
         const topLeft = geoToCanvas(tileLatMax, tileLonMin);
         const bottomRight = geoToCanvas(tileLatMin, tileLonMax);
         
@@ -571,11 +581,9 @@ export default function Home() {
       }
     }
 
-    // Draw gridlines with labels (matching matplotlib style)
+    // Draw gridlines (BMKG style) - lines only, labels drawn later
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-    ctx.lineWidth = 2;
-    ctx.fillStyle = '#000';
-    ctx.font = '18px Arial';
+    ctx.lineWidth = 1.5;
 
     // Latitude lines (every 5 degrees)
     for (let lt = Math.ceil(bounds.minLat / 5) * 5; lt <= bounds.maxLat; lt += 5) {
@@ -622,7 +630,7 @@ export default function Home() {
     };
     
     // Render using WebGL (much faster!)
-    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 0.9);
+    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 0.85);
     
     // Draw WebGL-rendered data onto main canvas using pixel-centered bounds
     const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);
@@ -637,14 +645,15 @@ export default function Home() {
     );
     ctx.imageSmoothingEnabled = true; // Re-enable for other drawings
 
-    // Draw ZOM boundaries on static image
+    // Draw province boundaries on static image (from Natural Earth via GitHub)
     try {
-      const zomResponse = await fetch('/zom.geojson');
-      const zomGeoJson = await zomResponse.json();
+      // Use Indonesia province boundaries from public GeoJSON
+      const provResponse = await fetch('https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json');
+      const provGeoJson = await provResponse.json();
       
       ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 1.2;
-      ctx.globalAlpha = 0.7;
+      ctx.lineWidth = 4; // Thicker province borders
+      ctx.globalAlpha = 0.85;
       
       // Helper function to draw a polygon
       const drawPolygon = (coordinates) => {
@@ -668,7 +677,7 @@ export default function Home() {
       };
       
       // Draw each feature
-      zomGeoJson.features.forEach(feature => {
+      provGeoJson.features.forEach(feature => {
         const geom = feature.geometry;
         if (geom.type === 'Polygon') {
           drawPolygon(geom.coordinates);
@@ -679,105 +688,123 @@ export default function Home() {
       
       ctx.globalAlpha = 1.0;
     } catch (error) {
-      console.error('Error loading ZOM borders for PNG:', error);
+      console.error('Error loading province borders for PNG:', error);
+    }
+
+    // Restore context (end clipping)
+    ctx.restore();
+
+    // Draw axis labels (outside clip region)
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 28px Arial';
+
+    // Latitude labels on left side
+    for (let lt = Math.ceil(bounds.minLat / 5) * 5; lt <= bounds.maxLat; lt += 5) {
+      const p1 = geoToCanvas(lt, bounds.minLon);
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      const latLabel = lt === 0 ? '0°' : lt > 0 ? `${lt}°N` : `${Math.abs(lt)}°S`;
+      ctx.fillText(latLabel, padding.left - 10, p1.y);
+    }
+
+    // Longitude labels at bottom
+    for (let ln = Math.ceil(bounds.minLon / 10) * 10; ln <= bounds.maxLon; ln += 10) {
+      const p1 = geoToCanvas(bounds.minLat, ln);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const lonLabel = ln >= 0 ? `${ln}°E` : `${Math.abs(ln)}°W`;
+      ctx.fillText(lonLabel, p1.x, padding.top + mapHeight + 10);
     }
 
     // Draw border around map
     ctx.strokeStyle = '#000';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
     ctx.strokeRect(padding.left, padding.top, mapWidth, mapHeight);
 
-    // Draw colorbar (vertical, solid color blocks)
-    const colorbarX = width - padding.right + 30;
-    const colorbarY = padding.top;
-    const colorbarWidth = 30;
-    const colorbarHeight = mapHeight;
+    // BMKG style: Horizontal colorbar at bottom
+    const colorbarY = padding.top + mapHeight + 80; // Below longitude labels
+    const colorbarHeight = 35;
+    const colorbarWidth = mapWidth * 0.8;
+    const colorbarX = padding.left + (mapWidth - colorbarWidth) / 2;
     
-    // Define color stops with ranges
+    // Define color stops with tick values (BMKG style)
     const colorStops = [
-      { range: [0, 20], color: '#340A00', label: '0-20' },
-      { range: [20, 50], color: '#8E2800', label: '20-50' },
-      { range: [50, 100], color: '#DC6200', label: '50-100' },
-      { range: [100, 150], color: '#EFA700', label: '100-150' },
-      { range: [150, 200], color: '#EBE100', label: '150-200' },
-      { range: [200, 300], color: '#E0FD68', label: '200-300' },
-      { range: [300, 400], color: '#8AD58B', label: '300-400' },
-      { range: [400, 500], color: '#369135', label: '400-500' },
-      { range: [500, 1000], color: '#00460C', label: '>500' }
+      { color: '#340A00' },   // 0-20
+      { color: '#8E2800' },   // 20-50
+      { color: '#DC6200' },   // 50-100
+      { color: '#EFA700' },   // 100-150
+      { color: '#EBE100' },   // 150-200
+      { color: '#E0FD68' },   // 200-300
+      { color: '#8AD58B' },   // 300-400
+      { color: '#369135' },   // 400-500
+      { color: '#00460C' }    // >500
     ];
     
-    // Draw solid color blocks
-    const maxValue = 500; // Fixed max for consistency
-    colorStops.forEach(stop => {
-      const startY = colorbarY + colorbarHeight - (stop.range[1] / maxValue) * colorbarHeight;
-      const endY = colorbarY + colorbarHeight - (stop.range[0] / maxValue) * colorbarHeight;
-      const blockHeight = endY - startY;
-      
+    const ticks = [20, 50, 100, 150, 200, 300, 400, 500];
+    const maxValue = 500;
+    
+    // Draw solid color blocks horizontally
+    const blockWidth = colorbarWidth / colorStops.length;
+    colorStops.forEach((stop, idx) => {
       ctx.fillStyle = stop.color;
-      ctx.fillRect(colorbarX, startY, colorbarWidth, blockHeight);
+      ctx.fillRect(colorbarX + idx * blockWidth, colorbarY, blockWidth, colorbarHeight);
     });
     
-    // Draw border
+    // Draw border around colorbar
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1;
     ctx.strokeRect(colorbarX, colorbarY, colorbarWidth, colorbarHeight);
-
-    // Colorbar ticks and labels
-    ctx.fillStyle = '#000';
-    ctx.font = '20px Arial';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
     
-    const ticks = [0, 20, 50, 100, 150, 200, 300, 400, 500];
-    ticks.forEach(tick => {
-      const y = colorbarY + colorbarHeight - (tick / maxValue) * colorbarHeight;
+    // Draw ticks and labels below colorbar
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    
+    // Tick positions based on color boundaries
+    const tickPositions = [1, 2, 3, 4, 5, 6, 7, 8]; // After each color block
+    tickPositions.forEach((pos, idx) => {
+      const x = colorbarX + pos * blockWidth;
+      // Draw tick mark
       ctx.beginPath();
-      ctx.moveTo(colorbarX + colorbarWidth, y);
-      ctx.lineTo(colorbarX + colorbarWidth + 5, y);
+      ctx.moveTo(x, colorbarY + colorbarHeight);
+      ctx.lineTo(x, colorbarY + colorbarHeight + 5);
       ctx.stroke();
-      ctx.fillText(tick.toString(), colorbarX + colorbarWidth + 10, y);
+      // Draw label
+      ctx.fillText(ticks[idx].toString(), x, colorbarY + colorbarHeight + 8);
     });
 
-    // Colorbar label - adjust based on data range
-    ctx.save();
-    ctx.translate(colorbarX + colorbarWidth + 80, padding.top + mapHeight / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.font = 'bold 22px Arial';
-    ctx.textAlign = 'center';
-    const colorbarLabel = dataRange === 'daily' ? 'Daily Precipitation (mm)' :
-                          dataRange === '10day' ? 'Avg. Precipitation (mm/day)' :
-                          'Avg. Precipitation (mm/day)';
-    ctx.fillText(colorbarLabel, 0, 0);
-    ctx.restore();
-
-    // Title with period and time - adjust based on data range
-    ctx.font = 'bold 28px Arial';
-    ctx.textAlign = 'center';
+    // BMKG style: Titles at top-left
     ctx.fillStyle = '#000';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
     
-    // Get current time string for the title
-    const currentOption = filteredTimeOptions[selectedTimeOption];
-    const titlePeriod = formatPeriod(period);
+    // Get period info for titles
+    const [periodYear, periodMonth] = period.split('-');
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const initialMonth = monthNames[parseInt(periodMonth) - 1];
     
-    let mainTitle, subtitle;
-    if (dataRange === 'daily') {
-      const currentTimeStr = availableTimes[data.timeIndex] || availableTimes[timeIndex] || '';
-      mainTitle = `Daily Precipitation - ${titlePeriod}`;
-      subtitle = formatTimeLong(currentTimeStr);
-    } else if (dataRange === '10day') {
-      mainTitle = `10-Day Average Precipitation - ${titlePeriod}`;
-      subtitle = currentOption ? currentOption.label : '';
-    } else {
-      mainTitle = `Monthly Average Precipitation - ${titlePeriod}`;
-      subtitle = currentOption ? currentOption.label : '';
-    }
+    // Calculate forecast month (one month after initial)
+    const forecastMonthIdx = parseInt(periodMonth); // 0-indexed becomes the next month
+    const forecastMonth = monthNames[forecastMonthIdx % 12];
+    const forecastYear = forecastMonthIdx === 12 ? parseInt(periodYear) + 1 : periodYear;
     
-    // Draw main title
-    ctx.fillText(mainTitle, width / 2, 40);
+    // Main title
+    ctx.font = 'bold 36px Arial';
+    ctx.fillText('Monthly Precipitation (mm)', padding.left, 20);
     
-    // Draw date subtitle
-    ctx.font = '22px Arial';
-    ctx.fillText(subtitle, width / 2, 75);
+    // Forecast line
+    ctx.font = '30px Arial';
+    ctx.fillText(`Forecast: ${forecastMonth} ${forecastYear}`, padding.left, 62);
+    
+    // Initial line (italic)
+    ctx.font = 'italic 30px Arial';
+    ctx.fillText(`Initial: ${initialMonth} ${periodYear}`, padding.left, 98);
+    
+    // Resolution info at top-right
+    ctx.font = '28px Arial';
+    ctx.textAlign = 'right';
+    ctx.fillText('20km InaRCMv0.5', width - padding.right, 25);
 
     return canvas.toDataURL('image/png');
   };
@@ -1196,7 +1223,7 @@ export default function Home() {
           <div className="map-display">
             <h3>Precipitation Visualization:</h3>
             {/* Show current data info */}
-            <div style={{ 
+            {/* <div style={{ 
               marginBottom: '10px', 
               padding: '10px 15px', 
               backgroundColor: '#f0f8ff', 
@@ -1219,7 +1246,7 @@ export default function Home() {
                   )}
                 </span>
               )}
-            </div>
+            </div> */}
             {viewMode === 'leaflet' ? (
               <Map precipData={precipData} period={period} dataRange={dataRange} />
             ) : (
