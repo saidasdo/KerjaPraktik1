@@ -667,7 +667,8 @@ def get_aggregated_precipitation_binary():
             
             # Avoid division by zero
             valid_counts = np.where(valid_counts == 0, 1, valid_counts)
-            aggregated_values = aggregated_values / valid_counts
+            # TEMP: Comment out for accumulation test (uncomment for average)
+            aggregated_values = aggregated_values #/ valid_counts
         
         # Replace NaN back to -999
         aggregated_values = np.nan_to_num(aggregated_values, nan=-999).astype(np.float32)

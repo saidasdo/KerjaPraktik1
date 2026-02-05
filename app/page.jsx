@@ -630,7 +630,7 @@ export default function Home() {
     };
     
     // Render using WebGL (much faster!)
-    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 0.85);
+    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 1);
     
     // Draw WebGL-rendered data onto main canvas using pixel-centered bounds
     const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);

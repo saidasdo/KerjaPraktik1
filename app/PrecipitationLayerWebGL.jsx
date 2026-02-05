@@ -213,10 +213,10 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
         const normalized01 = Math.min(1, value / effectiveMax);
         
         ///versi 1///
-        //const gammaCorrected = Math.sqrt(normalized01);
+        // const gammaCorrected = Math.sqrt(normalized01);
   
 
-        ///versi2///
+        //versi2///
         const base = Math.log1p(normalized01 * 10) / Math.log1p(10);
         const threshold = 0.2; 
         const multiplier = 1.8; 
