@@ -26,8 +26,17 @@ ChartJS.register(
   Legend
 );
 
-// Color legend component
+// Color legend component - responsive for mobile
 function ColorLegend({ stats }) {
+  const [isMobile, setIsMobile] = useState(false);
+  
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+  
   const colorStops = [
     { range: '>500', color: '#00460C' },
     { range: '400-500', color: '#369135' },
@@ -40,6 +49,41 @@ function ColorLegend({ stats }) {
     { range: '0-20', color: '#340A00' }
   ];
   
+  // Mobile: horizontal legend below map
+  if (isMobile) {
+    return (
+      <div style={{
+        position: 'relative',
+        width: '100%',
+        background: 'white',
+        padding: '10px',
+        borderRadius: '5px',
+        boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+        marginTop: '10px',
+        fontSize: '10px'
+      }}>
+        <div style={{ fontWeight: 'bold', marginBottom: '8px', fontSize: '11px', textAlign: 'center' }}>
+          Precipitation (mm)
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px' }}>
+          {colorStops.map((stop, idx) => (
+            <div key={idx} style={{ display: 'flex', alignItems: 'center', padding: '2px 4px' }}>
+              <div style={{
+                width: '16px',
+                height: '14px',
+                backgroundColor: stop.color,
+                marginRight: '4px',
+                border: '1px solid #999'
+              }} />
+              <span>{stop.range}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  
+  // Desktop: vertical legend on map
   return (
     <div style={{
       position: 'absolute',
@@ -83,7 +127,15 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const zomLayerRef = useRef(null);
   const selectedZomRef = useRef(null);
   const zomGeoJsonRef = useRef(null);
-
+  const [isMobile, setIsMobile] = useState(false);
+  
+  // Check for mobile viewport
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
   // Convert dataRange to API mode
   const getApiMode = () => {
     if (dataRange === 'daily') return 'day';
@@ -1036,28 +1088,36 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   );
 
   return (
-    <div style={{ display: 'flex', position: 'relative', height: '620px' }}>
-      {/* Map Container */}
-      <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
-        <div 
-          ref={mapRef} 
-          style={{ height: '100%', width: '100%', minHeight: '400px' }}
-        />
-        {mapReady && precipData && (
-          <>
-            <PrecipitationLayerWebGL 
-              map={mapInstanceRef.current} 
-              data={precipData}
-              opacity={0.8}
-            />
-            <ColorLegend stats={precipData.stats} />
-            <ModeToggle />
-          </>
-        )}
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', position: 'relative', height: isMobile ? '400px' : '620px' }}>
+        {/* Map Container */}
+        <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+          <div 
+            ref={mapRef} 
+            style={{ height: '100%', width: '100%', minHeight: '300px' }}
+          />
+          {mapReady && precipData && (
+            <>
+              <PrecipitationLayerWebGL 
+                map={mapInstanceRef.current} 
+                data={precipData}
+                opacity={0.8}
+              />
+              {/* Desktop: legend inside map */}
+              {!isMobile && <ColorLegend stats={precipData.stats} />}
+              <ModeToggle />
+            </>
+          )}
+        </div>
+        
+        {/* Side Panel - shown when clicked */}
+        {sideWindow.visible && <SideWindow />}
       </div>
       
-      {/* Side Panel - shown when clicked */}
-      {sideWindow.visible && <SideWindow />}
+      {/* Mobile: legend below map */}
+      {isMobile && mapReady && precipData && (
+        <ColorLegend stats={precipData.stats} />
+      )}
       
       {/* Time Series Popup Modal */}
       {showChartPopup && sideWindow.data?.timeSeriesData && (
