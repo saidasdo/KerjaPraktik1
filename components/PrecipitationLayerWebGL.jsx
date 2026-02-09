@@ -166,7 +166,8 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   for (let i = 0; i < height; i++) {
     for (let j = 0; j < width; j++) {
       const srcY = latAscending ? (height - 1 - i) : i;
-      const value = values[srcY]?.[j] ?? -999;
+      const row = values[srcY];
+      const value = (row && row[j] != null) ? row[j] : -999;
       
       if (value !== -999 && value >= 0) {
         validCount++;
@@ -203,7 +204,8 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   for (let i = 0; i < height; i++) {
     for (let j = 0; j < width; j++) {
       const srcY = latAscending ? (height - 1 - i) : i;
-      const value = values[srcY]?.[j] ?? -999;
+      const row2 = values[srcY];
+      const value = (row2 && row2[j] != null) ? row2[j] : -999;
       const texIdx = (i * width + j) * 4;
       
       if (value !== -999 && value >= 0) {
@@ -316,7 +318,9 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
     const startTime = performance.now();
     
     // Render using WebGL
-    renderPrecipitationWebGL(canvas, data, stats?.min ?? 0, stats?.max ?? 100, opacity);
+    const minVal = (stats && stats.min != null) ? stats.min : 0;
+    const maxVal = (stats && stats.max != null) ? stats.max : 100;
+    renderPrecipitationWebGL(canvas, data, minVal, maxVal, opacity);
     
     console.log(`WebGL render time: ${(performance.now() - startTime).toFixed(2)}ms`);
     
