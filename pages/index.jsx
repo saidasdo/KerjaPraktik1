@@ -776,16 +776,25 @@ export default function Home() {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
     
-    // Get period info for titles
-    const periodYear = period.substring(0, 4);
-    const periodMonth = period.substring(4, 6);
+    // Get period info for titles (with safety checks)
+    const periodYear = period && period.length >= 4 ? period.substring(0, 4) : new Date().getFullYear().toString();
+    const periodMonth = period && period.length >= 6 ? period.substring(4, 6) : '01';
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const initialMonth = monthNames[parseInt(periodMonth) - 1];
+    const monthIdx = parseInt(periodMonth) - 1;
+    const initialMonth = monthNames[monthIdx] || 'Jan';
     
-    // Calculate forecast month (one month after initial)
-    const forecastMonthIdx = parseInt(periodMonth); // 0-indexed becomes the next month
-    const forecastMonth = monthNames[forecastMonthIdx % 12];
-    const forecastYear = forecastMonthIdx === 12 ? parseInt(periodYear) + 1 : periodYear;
+    // Forecast = the time the user currently selected
+    // Try to get from the selected time option label
+    let forecastLabel = `${initialMonth} ${periodYear}`; // fallback
+    const currentOption = filteredTimeOptions[selectedTimeOption];
+    if (currentOption && currentOption.label) {
+      forecastLabel = currentOption.label;
+    } else if (dataRange === 'daily' && availableTimes[selectedTimeOption]) {
+      const d = new Date(availableTimes[selectedTimeOption]);
+      forecastLabel = `${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+    } else if (dataRange === 'monthly') {
+      forecastLabel = `${initialMonth} ${periodYear}`;
+    }
     
     // Main title
     ctx.font = 'bold 36px Arial';
@@ -793,7 +802,7 @@ export default function Home() {
     
     // Forecast line
     ctx.font = '30px Arial';
-    ctx.fillText(`Forecast: ${forecastMonth} ${forecastYear}`, padding.left, 62);
+    ctx.fillText(`Forecast: ${forecastLabel}`, padding.left, 62);
     
     // Initial line (italic)
     ctx.font = 'italic 30px Arial';

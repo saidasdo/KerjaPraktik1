@@ -121,11 +121,23 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const [sideWindow, setSideWindow] = useState({ visible: false, data: null, loading: false });
   const [showChartPopup, setShowChartPopup] = useState(false);
   const markerRef = useRef(null);
-  const [clickMode, setClickMode] = useState('point'); // 'point' or 'region'
+  const [clickMode, setClickMode] = useState('point'); // 'point', 'region', or 'box'
   const zomLayerRef = useRef(null);
   const selectedZomRef = useRef(null);
   const zomGeoJsonRef = useRef(null);
+  const oceanLayerRef = useRef(null);  // Blue ocean layer for ZOM mode
+  const coloredZomLayerRef = useRef(null);  // Colored ZOM polygons layer
   const [isMobile, setIsMobile] = useState(false);
+  
+  // Box select mode state
+  const boxStartRef = useRef(null);      // Start corner of box
+  const boxRectRef = useRef(null);       // Leaflet rectangle for the box
+  const boxMaskRef = useRef(null);       // Array of mask rectangles
+  const isDrawingBoxRef = useRef(false); // Whether user is currently drawing
+  
+  // Coordinate search state
+  const [coordSearch, setCoordSearch] = useState({ lat: '', lon: '' });
+  const [coordError, setCoordError] = useState('');
   
   // Check for mobile viewport
   useEffect(() => {
@@ -140,6 +152,101 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     if (dataRange === '10day') return '10day';
     if (dataRange === 'monthly') return 'monthly';
     return 'day';
+  };
+
+  // Get color for precipitation value (matches the color legend)
+  const getPrecipitationColor = (value) => {
+    if (value === null || value === undefined) return '#cccccc';  // Gray for no data
+    if (value > 500) return '#00460C';
+    if (value > 400) return '#369135';
+    if (value > 300) return '#8AD58B';
+    if (value > 200) return '#E0FD68';
+    if (value > 150) return '#EBE100';
+    if (value > 100) return '#EFA700';
+    if (value > 50) return '#DC6200';
+    if (value > 20) return '#8E2800';
+    return '#340A00';
+  };
+
+  // Calculate average precipitation for a polygon using grid points inside it
+  const calculatePolygonAverage = (geometry) => {
+    if (!precipData || !precipData.lat || !precipData.lon || !precipData.values) {
+      return null;
+    }
+
+    const { lat: lats, lon: lons, values } = precipData;
+    
+    // Get polygon bounds for quick filtering
+    let minLat = Infinity, maxLat = -Infinity;
+    let minLon = Infinity, maxLon = -Infinity;
+    
+    const extractCoords = (coords) => {
+      if (typeof coords[0] === 'number') {
+        // coords is [lon, lat]
+        if (coords[1] < minLat) minLat = coords[1];
+        if (coords[1] > maxLat) maxLat = coords[1];
+        if (coords[0] < minLon) minLon = coords[0];
+        if (coords[0] > maxLon) maxLon = coords[0];
+      } else {
+        coords.forEach(extractCoords);
+      }
+    };
+    
+    if (geometry.type === 'Polygon') {
+      extractCoords(geometry.coordinates);
+    } else if (geometry.type === 'MultiPolygon') {
+      geometry.coordinates.forEach(poly => extractCoords(poly));
+    }
+    
+    // Simple point-in-polygon test using ray casting
+    const pointInPolygon = (lat, lon, polygon) => {
+      // polygon is array of [lon, lat] pairs
+      let inside = false;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i][0], yi = polygon[i][1];
+        const xj = polygon[j][0], yj = polygon[j][1];
+        
+        if (((yi > lat) !== (yj > lat)) && (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    };
+    
+    const isPointInGeometry = (lat, lon) => {
+      if (geometry.type === 'Polygon') {
+        return pointInPolygon(lat, lon, geometry.coordinates[0]);
+      } else if (geometry.type === 'MultiPolygon') {
+        return geometry.coordinates.some(poly => pointInPolygon(lat, lon, poly[0]));
+      }
+      return false;
+    };
+    
+    // Collect valid values inside polygon
+    let sum = 0;
+    let count = 0;
+    
+    for (let i = 0; i < lats.length; i++) {
+      const lat = lats[i];
+      // Quick bounds check
+      if (lat < minLat || lat > maxLat) continue;
+      
+      for (let j = 0; j < lons.length; j++) {
+        const lon = lons[j];
+        // Quick bounds check
+        if (lon < minLon || lon > maxLon) continue;
+        
+        const value = values[i]?.[j];
+        if (value === undefined || value === null || value === -999 || value < 0) continue;
+        
+        if (isPointInGeometry(lat, lon)) {
+          sum += value;
+          count++;
+        }
+      }
+    }
+    
+    return count > 0 ? sum / count : null;
   };
 
   // Function to get precipitation value at lat/lon
@@ -215,6 +322,178 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         loading: false,
         data: { ...prev.data, timeSeriesData: null }
       }));
+    }
+  };
+
+  // Handle coordinate search - navigate to lat/lon and show time series
+  const handleCoordSearch = async () => {
+    const lat = parseFloat(coordSearch.lat);
+    const lon = parseFloat(coordSearch.lon);
+    
+    if (isNaN(lat) || isNaN(lon)) {
+      setCoordError('Please enter valid numbers');
+      return;
+    }
+    
+    if (lat < -90 || lat > 90) {
+      setCoordError('Latitude must be between -90 and 90');
+      return;
+    }
+    
+    if (lon < -180 || lon > 180) {
+      setCoordError('Longitude must be between -180 and 180');
+      return;
+    }
+    
+    setCoordError('');
+    
+    const L = require('leaflet');
+    const map = mapInstanceRef.current;
+    
+    if (!map) return;
+    
+    // Remove old marker if exists
+    if (markerRef.current) {
+      map.removeLayer(markerRef.current);
+    }
+    
+    // Remove selected ZOM highlight if any
+    if (selectedZomRef.current) {
+      map.removeLayer(selectedZomRef.current);
+      selectedZomRef.current = null;
+    }
+    
+    // Set loading state
+    setSideWindow({ visible: true, data: null, loading: true });
+    
+    // Pan map to location
+    map.setView([lat, lon], 8);
+    
+    // Get precipitation at location
+    const precip = getPrecipitationAt(lat, lon);
+    
+    // Fetch location name
+    let locationName = 'Custom Location';
+    let locationDetails = { city: '', province: '', country: '' };
+    
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`,
+        { headers: { 'User-Agent': 'PrecipitationMap/1.0' } }
+      );
+      const data = await response.json();
+      
+      if (data && data.address) {
+        const addr = data.address;
+        locationDetails.city = addr.city || addr.town || addr.village || addr.municipality || '';
+        locationDetails.province = addr.state || addr.province || '';
+        locationDetails.country = addr.country || '';
+        
+        const parts = [locationDetails.city, locationDetails.province, locationDetails.country].filter(Boolean);
+        locationName = parts.join(', ') || 'Custom Location';
+      }
+    } catch (error) {
+      console.error('Error fetching location:', error);
+    }
+    
+    // Fetch time series
+    let timeSeriesData = null;
+    const mode = getApiMode();
+    try {
+      const timeSeriesResponse = await fetch(
+        `http://localhost:5000/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+      );
+      if (timeSeriesResponse.ok) {
+        timeSeriesData = await timeSeriesResponse.json();
+      }
+    } catch (error) {
+      console.error('Error fetching time series:', error);
+    }
+    
+    // Add marker
+    const marker = L.marker([lat, lon]).addTo(map);
+    markerRef.current = marker;
+    
+    // Update side window
+    setSideWindow({
+      visible: true,
+      loading: false,
+      data: {
+        isRegion: false,
+        lat: lat.toFixed(4),
+        lng: lon.toFixed(4),
+        locationName,
+        locationDetails,
+        currentPrecip: precip ? precip.toFixed(2) : null,
+        timeSeriesData,
+        isCustomCoord: true
+      }
+    });
+    
+    setClickInfo({
+      lat: lat.toFixed(4),
+      lon: lon.toFixed(4),
+      precip: precip ? precip.toFixed(2) : null
+    });
+  };
+
+  // Download time series as CSV
+  const downloadCSV = async () => {
+    if (!sideWindow.data) return;
+    
+    const mode = getApiMode();
+    
+    try {
+      if (sideWindow.data.isRegion) {
+        // Region CSV download
+        const response = await fetch('http://localhost:5000/api/timeseries/region/csv', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            geometry: sideWindow.data.geometry,
+            zom_name: sideWindow.data.zomName,
+            period: period,
+            mode: mode
+          })
+        });
+        
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const contentDisposition = response.headers.get('Content-Disposition');
+          a.download = contentDisposition?.split('filename=')[1] || 
+                       `precipitation_${period}_${mode}_${sideWindow.data.zomName}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        }
+      } else {
+        // Point CSV download
+        const lat = sideWindow.data.lat;
+        const lon = sideWindow.data.lng;
+        
+        const response = await fetch(
+          `http://localhost:5000/api/timeseries/csv?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+        );
+        
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `precipitation_${period}_${mode}_lat${lat}_lon${lon}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          window.URL.revokeObjectURL(url);
+        }
+      }
+    } catch (error) {
+      console.error('Error downloading CSV:', error);
+      alert('Failed to download CSV');
     }
   };
 
@@ -324,12 +603,35 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       maxBounds: overlayBounds,       // Restrict panning to overlay area
       maxBoundsViscosity: 1.0,        // Prevent any dragging outside bounds
       minZoom: 5,                     // Prevent zooming out too far
-    }).setView([-2.5, 116], 5);       // Center: (-11+6)/2=-2.5, (91+141)/2=116
+    }).setView([-2.5, 116], 4);       // Center: (-11+6)/2=-2.5, (91+141)/2=116
 
-    // Create a custom pane for coastlines that sits ABOVE the overlay
+    // Create custom panes for proper layering
+    // Order (bottom to top): tiles -> worldBorder -> precipitation -> indonesiaBorder -> markers
+    
+    // Pane for world borders (ABOVE precipitation overlay)
+    map.createPane('worldBorderPane');
+    map.getPane('worldBorderPane').style.zIndex = 450;  // Above overlayPane (400)
+    map.getPane('worldBorderPane').style.pointerEvents = 'none';
+    
+    // Pane for Indonesia/ZOM borders (above world borders)
+    map.createPane('indonesiaBorderPane');
+    map.getPane('indonesiaBorderPane').style.zIndex = 460;  // Above world borders
+    map.getPane('indonesiaBorderPane').style.pointerEvents = 'none';
+    
+    // Legacy pane for click handlers
     map.createPane('coastlinePane');
-    map.getPane('coastlinePane').style.zIndex = 450;  // Above overlayPane (400) but below markerPane (600)
-    map.getPane('coastlinePane').style.pointerEvents = 'none';  // Allow clicks through
+    map.getPane('coastlinePane').style.zIndex = 450;
+    map.getPane('coastlinePane').style.pointerEvents = 'none';
+    
+    // Pane for ocean layer in ZOM mode (same level as overlay to replace it)
+    map.createPane('oceanPane');
+    map.getPane('oceanPane').style.zIndex = 401;  // Just above default overlayPane (400)
+    map.getPane('oceanPane').style.pointerEvents = 'none';
+    
+    // Pane for colored ZOM polygons (above ocean, replaces precipitation)
+    map.createPane('coloredZomPane');
+    map.getPane('coloredZomPane').style.zIndex = 402;  // Above ocean
+    map.getPane('coloredZomPane').style.pointerEvents = 'none';
 
     L.tileLayer(
       'https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png',
@@ -349,24 +651,55 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       maxZoom: 18  // Hide when zooming in beyond zoom 6
     }).addTo(map);
 
-    // Load Indonesia boundaries (ZOM regions + coastline)
+    // Load country boundaries (global + Indonesia ZOM)
     // This gives us VECTOR lines with fixed stroke width regardless of zoom
     const loadIndonesiaBorders = async () => {
       try {
-        // Load ZOM (Zona Musim) GeoJSON - climate zones from BMKG
+        // First, load GLOBAL country borders (thin lines, above overlay)
+        try {
+          const worldResponse = await fetch('https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson');
+          const worldGeojson = await worldResponse.json();
+          
+          // Filter out Indonesia from world borders (we'll draw it separately with thicker lines)
+          const worldWithoutIndonesia = {
+            type: 'FeatureCollection',
+            features: worldGeojson.features.filter(f => 
+              f.properties.ADMIN !== 'Indonesia' && 
+              f.properties.ISO_A3 !== 'IDN' &&
+              f.properties.name !== 'Indonesia'
+            )
+          };
+          
+          // Add world country borders (except Indonesia) with very thin lines
+          L.geoJSON(worldWithoutIndonesia, {
+            pane: 'worldBorderPane',
+            style: {
+              color: '#000000',      // Black color for borders
+              weight: 0.2,           // Very thin for global borders
+              opacity: 0.4,          // More transparent
+              fill: false            // No fill, just borders
+            }
+          }).addTo(map);
+          
+          console.log('World country borders loaded (excluding Indonesia)');
+        } catch (worldError) {
+          console.error('Failed to load world borders:', worldError);
+        }
+        
+        // Then load ZOM (Zona Musim) GeoJSON for Indonesia (thicker, on top)
         const response = await fetch('/zom.geojson');
         const geojson = await response.json();
         
         // Store GeoJSON for later use
         zomGeoJsonRef.current = geojson;
         
-        // Add ZOM boundaries with fixed styling (border only layer - always visible)
+        // Add ZOM boundaries with thicker styling (in higher z-index pane)
         L.geoJSON(geojson, {
-          pane: 'coastlinePane',
+          pane: 'indonesiaBorderPane',
           style: {
             color: '#000000',      // Black color for borders
-            weight: 0.8,           // Thinner for ZOM (more zones = more lines)
-            opacity: 0.7,          // Slightly transparent
+            weight: 0.8,           // Thicker for Indonesia ZOM
+            opacity: 0.7,          // Less transparent than global
             fill: false            // No fill, just borders
           }
         }).addTo(map);
@@ -465,9 +798,56 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       selectedZomRef.current = null;
     }
     
+    // Remove ocean layer
+    if (oceanLayerRef.current) {
+      map.removeLayer(oceanLayerRef.current);
+      oceanLayerRef.current = null;
+    }
+    
+    // Remove colored ZOM layer
+    if (coloredZomLayerRef.current) {
+      map.removeLayer(coloredZomLayerRef.current);
+      coloredZomLayerRef.current = null;
+    }
+    
     // Only create clickable layer in region mode
     if (clickMode === 'region') {
       const geojson = zomGeoJsonRef.current;
+      
+      // Create blue layer covering entire visible area (ocean + all non-ZOM land)
+      const oceanBounds = [
+        [-90, -180],   // Southwest (whole world)
+        [-90, 180],    // Southeast  
+        [90, 180],     // Northeast
+        [90, -180]     // Northwest
+      ];
+      oceanLayerRef.current = L.polygon(oceanBounds, {
+        pane: 'oceanPane',
+        fillColor: '#87CEEB',  // Light blue
+        fillOpacity: 0.9,
+        color: '#87CEEB',
+        weight: 0,
+        interactive: false
+      }).addTo(map);
+      
+      // Create colored ZOM layer based on precipitation averages
+      coloredZomLayerRef.current = L.geoJSON(geojson, {
+        pane: 'coloredZomPane',
+        style: (feature) => {
+          const avgPrecip = calculatePolygonAverage(feature.geometry);
+          const fillColor = getPrecipitationColor(avgPrecip);
+          return {
+            fillColor: fillColor,
+            fillOpacity: 0.9,
+            color: '#333333',
+            weight: 0.5,
+            opacity: 0.9
+          };
+        },
+        interactive: false  // Don't intercept clicks
+      }).addTo(map);
+      
+      console.log('ZOM colored layer created with precipitation averages');
       
       zomLayerRef.current = L.geoJSON(geojson, {
         style: {
@@ -611,8 +991,16 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         map.removeLayer(zomLayerRef.current);
         zomLayerRef.current = null;
       }
+      if (oceanLayerRef.current) {
+        map.removeLayer(oceanLayerRef.current);
+        oceanLayerRef.current = null;
+      }
+      if (coloredZomLayerRef.current) {
+        map.removeLayer(coloredZomLayerRef.current);
+        coloredZomLayerRef.current = null;
+      }
     };
-  }, [clickMode, period, dataRange]);
+  }, [clickMode, period, dataRange, precipData]);
 
   // Add click handler for POINT mode when map and data are ready
   useEffect(() => {
@@ -627,6 +1015,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       
       const { lat, lng } = e.latlng;
       const precip = getPrecipitationAt(lat, lng);
+
+      // Auto-fill the coordinate search bar with the clicked coords
+      setCoordSearch({ lat: lat.toFixed(4), lon: lng.toFixed(4) });
 
       // Remove old marker if exists
       if (markerRef.current) {
@@ -725,6 +1116,173 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       }
     };
   }, [precipData, clickMode]);
+
+  // Box Select mode handlers
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    
+    const L = require('leaflet');
+    const map = mapInstanceRef.current;
+    
+    // Clean up box artifacts when leaving box mode
+    const cleanupBox = () => {
+      if (boxRectRef.current) {
+        map.removeLayer(boxRectRef.current);
+        boxRectRef.current = null;
+      }
+      if (boxMaskRef.current) {
+        boxMaskRef.current.forEach(m => map.removeLayer(m));
+        boxMaskRef.current = null;
+      }
+      boxStartRef.current = null;
+      isDrawingBoxRef.current = false;
+    };
+    
+    if (clickMode !== 'box') {
+      cleanupBox();
+      map.dragging.enable();
+      map.getContainer().style.cursor = '';
+      return;
+    }
+    
+    // Disable map dragging in box mode so mousedown/drag draws a box
+    map.dragging.disable();
+    map.getContainer().style.cursor = 'crosshair';
+    
+    const onMouseDown = (e) => {
+      // Remove previous box/mask
+      cleanupBox();
+      // Close side window from previous box
+      setSideWindow({ visible: false, data: null, loading: false });
+      
+      boxStartRef.current = e.latlng;
+      isDrawingBoxRef.current = true;
+      
+      // Create initial rectangle (will grow as mouse moves)
+      boxRectRef.current = L.rectangle(
+        [e.latlng, e.latlng],
+        { color: '#2196F3', weight: 2, fillColor: '#2196F3', fillOpacity: 0.15, dashArray: '6 3' }
+      ).addTo(map);
+    };
+    
+    const onMouseMove = (e) => {
+      if (!isDrawingBoxRef.current || !boxStartRef.current || !boxRectRef.current) return;
+      boxRectRef.current.setBounds(L.latLngBounds(boxStartRef.current, e.latlng));
+    };
+    
+    const onMouseUp = async (e) => {
+      if (!isDrawingBoxRef.current || !boxStartRef.current) return;
+      isDrawingBoxRef.current = false;
+      
+      const start = boxStartRef.current;
+      const end = e.latlng;
+      
+      // Ignore tiny boxes (accidental clicks)
+      if (Math.abs(start.lat - end.lat) < 0.1 && Math.abs(start.lng - end.lng) < 0.1) {
+        cleanupBox();
+        return;
+      }
+      
+      const boxBounds = L.latLngBounds(start, end);
+      
+      // Update the rectangle to final position
+      if (boxRectRef.current) {
+        boxRectRef.current.setBounds(boxBounds);
+        boxRectRef.current.setStyle({ fillOpacity: 0.05, dashArray: null });
+      }
+      
+      // Create mask outside the box (4 rectangles)
+      const mapBounds = L.latLngBounds(L.latLng(-90, -180), L.latLng(90, 180));
+      const sw = boxBounds.getSouthWest();
+      const ne = boxBounds.getNorthEast();
+      
+      const maskStyle = { color: 'transparent', weight: 0, fillColor: '#000000', fillOpacity: 0.85, interactive: false };
+      
+      boxMaskRef.current = [
+        // Top mask
+        L.rectangle([L.latLng(ne.lat, mapBounds.getWest()), L.latLng(mapBounds.getNorth(), mapBounds.getEast())], maskStyle).addTo(map),
+        // Bottom mask
+        L.rectangle([L.latLng(mapBounds.getSouth(), mapBounds.getWest()), L.latLng(sw.lat, mapBounds.getEast())], maskStyle).addTo(map),
+        // Left mask
+        L.rectangle([L.latLng(sw.lat, mapBounds.getWest()), L.latLng(ne.lat, sw.lng)], maskStyle).addTo(map),
+        // Right mask
+        L.rectangle([L.latLng(sw.lat, ne.lng), L.latLng(ne.lat, mapBounds.getEast())], maskStyle).addTo(map),
+      ];
+      
+      // Fetch time series for the box region
+      setSideWindow({ visible: true, data: null, loading: true });
+      
+      const mode = getApiMode();
+      const geometry = {
+        type: 'Polygon',
+        coordinates: [[
+          [sw.lng, sw.lat],
+          [ne.lng, sw.lat],
+          [ne.lng, ne.lat],
+          [sw.lng, ne.lat],
+          [sw.lng, sw.lat]
+        ]]
+      };
+      
+      try {
+        const response = await fetch('http://localhost:5000/api/timeseries/region', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            geometry: geometry,
+            zom_name: `Box [${sw.lat.toFixed(2)}, ${sw.lng.toFixed(2)}] to [${ne.lat.toFixed(2)}, ${ne.lng.toFixed(2)}]`,
+            zom_id: 'Custom Box',
+            province: '',
+            island: '',
+            climate_type: '',
+            season_type: '',
+            period: period,
+            mode: mode
+          })
+        });
+        
+        if (response.ok) {
+          const regionData = await response.json();
+          setSideWindow({
+            visible: true,
+            loading: false,
+            data: {
+              isRegion: true,
+              zomName: `Box Select`,
+              zomId: `[${sw.lat.toFixed(2)}, ${sw.lng.toFixed(2)}] to [${ne.lat.toFixed(2)}, ${ne.lng.toFixed(2)}]`,
+              province: '',
+              island: '',
+              climateType: '',
+              seasonType: '',
+              geometry: geometry,
+              numGridPoints: regionData.num_grid_points,
+              timeSeriesData: regionData,
+              processingTime: regionData.processing_time_seconds
+            }
+          });
+        } else {
+          const error = await response.json();
+          setSideWindow({ visible: true, loading: false, data: { error: error.error || 'Failed to fetch box data' } });
+        }
+      } catch (error) {
+        console.error('Error fetching box region data:', error);
+        setSideWindow({ visible: true, loading: false, data: { error: 'Network error fetching box data' } });
+      }
+    };
+    
+    map.on('mousedown', onMouseDown);
+    map.on('mousemove', onMouseMove);
+    map.on('mouseup', onMouseUp);
+    
+    return () => {
+      map.off('mousedown', onMouseDown);
+      map.off('mousemove', onMouseMove);
+      map.off('mouseup', onMouseUp);
+      cleanupBox();
+      map.dragging.enable();
+      map.getContainer().style.cursor = '';
+    };
+  }, [clickMode, period, dataRange]);
 
   // Side Window Component
   const SideWindow = () => {
@@ -874,6 +1432,29 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                     </div>
                   </div>
                 </div>
+
+                {/* CSV Download Button */}
+                <button
+                  onClick={downloadCSV}
+                  style={{
+                    width: '100%',
+                    padding: '10px 15px',
+                    marginBottom: '15px',
+                    background: '#4CAF50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '5px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    fontWeight: 'bold',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px'
+                  }}
+                >
+                  <span>📥</span> Download CSV
+                </button>
 
                 {/* Time Series Chart */}
                 <div 
@@ -1082,6 +1663,107 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       >
         ZOM
       </button>
+      <button
+        onClick={() => setClickMode('box')}
+        style={{
+          padding: '6px 12px',
+          border: 'none',
+          borderRadius: '6px',
+          cursor: 'pointer',
+          fontWeight: clickMode === 'box' ? 'bold' : 'normal',
+          background: clickMode === 'box' ? '#4CAF50' : '#e0e0e0',
+          color: clickMode === 'box' ? 'white' : '#333',
+          fontSize: '12px',
+          transition: 'all 0.2s'
+        }}
+      >
+        Box
+      </button>
+    </div>
+  );
+
+  // Coordinate Search Bar - rendered inline to avoid focus loss from re-creating component
+  const coordSearchBar = (
+    <div style={{
+      position: 'absolute',
+      top: '10px',
+      right: '10px',
+      zIndex: 1000,
+      background: 'white',
+      borderRadius: '8px',
+      boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+      padding: '8px 12px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '6px',
+      minWidth: '180px'
+    }}>
+      <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#333' }}>
+        Search Coordinates
+      </div>
+      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+        <input
+          type="text"
+          placeholder="Lat"
+          value={coordSearch.lat}
+          onChange={(e) => {
+            const val = e.target.value;
+            // Allow numbers, minus sign, and decimal point
+            if (val === '' || val === '-' || /^-?\d*\.?\d*$/.test(val)) {
+              setCoordSearch(prev => ({ ...prev, lat: val }));
+            }
+          }}
+          onKeyDown={(e) => e.key === 'Enter' && handleCoordSearch()}
+          style={{
+            width: '70px',
+            padding: '5px 7px',
+            border: '1px solid #ddd',
+            borderRadius: '4px',
+            fontSize: '12px',
+            MozAppearance: 'textfield',
+            WebkitAppearance: 'none'
+          }}
+        />
+        <input
+          type="text"
+          placeholder="Lon"
+          value={coordSearch.lon}
+          onChange={(e) => {
+            const val = e.target.value;
+            if (val === '' || val === '-' || /^-?\d*\.?\d*$/.test(val)) {
+              setCoordSearch(prev => ({ ...prev, lon: val }));
+            }
+          }}
+          onKeyDown={(e) => e.key === 'Enter' && handleCoordSearch()}
+          style={{
+            width: '70px',
+            padding: '5px 7px',
+            border: '1px solid #ddd',
+            borderRadius: '4px',
+            fontSize: '12px',
+            MozAppearance: 'textfield',
+            WebkitAppearance: 'none'
+          }}
+        />
+        <button
+          onClick={handleCoordSearch}
+          style={{
+            padding: '5px 10px',
+            background: '#2196F3',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 'bold'
+          }}
+        >
+          Go
+        </button>
+      </div>
+      {coordError && (
+        <div style={{ color: '#f44336', fontSize: '10px' }}>{coordError}</div>
+      )}
     </div>
   );
 
@@ -1096,14 +1778,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           />
           {mapReady && precipData && (
             <>
-              <PrecipitationLayerWebGL 
-                map={mapInstanceRef.current} 
-                data={precipData}
-                opacity={0.8}
-              />
+              {/* Hide WebGL overlay in ZOM mode - replaced by colored ZOM polygons */}
+              {clickMode !== 'region' && (
+                <PrecipitationLayerWebGL 
+                  map={mapInstanceRef.current} 
+                  data={precipData}
+                  opacity={0.8}
+                />
+              )}
               {/* Desktop: legend inside map */}
               {!isMobile && <ColorLegend stats={precipData.stats} />}
               <ModeToggle />
+              {coordSearchBar}
             </>
           )}
         </div>

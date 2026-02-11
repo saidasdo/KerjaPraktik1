@@ -333,11 +333,14 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
     const latStep = (dataLatMax - dataLatMin) / (lat.length - 1);
     const lonStep = (dataLonMax - dataLonMin) / (lon.length - 1);
     
+    // Trim 1 degree from each edge (edge data is not accurate)
+    const EDGE_TRIM = 1;
+    
     const overlayBounds = {
-      minLat: dataLatMin - latStep / 2,
-      maxLat: dataLatMax + latStep / 2,
-      minLon: dataLonMin - lonStep / 2,
-      maxLon: dataLonMax + lonStep / 2
+      minLat: dataLatMin - latStep / 2 + EDGE_TRIM,
+      maxLat: dataLatMax + latStep / 2 - EDGE_TRIM,
+      minLon: dataLonMin - lonStep / 2 + EDGE_TRIM,
+      maxLon: dataLonMax + lonStep / 2 - EDGE_TRIM
     };
 
     // Create Leaflet image overlay

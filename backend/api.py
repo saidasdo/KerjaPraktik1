@@ -7,6 +7,9 @@ from functools import lru_cache
 import time as time_module
 from shapely.geometry import shape, Point
 from shapely.prepared import prep
+from io import StringIO
+import csv
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
@@ -16,15 +19,79 @@ BASE_URL_TEMPLATE = "http://202.90.199.129:1980/dods/inarcm/{period}/SRF_{period
 # SRF data is 6-hourly (4 time steps per day), need to aggregate for daily view
 TIME_STEPS_PER_DAY = 4
 
-# Available periods
-AVAILABLE_PERIODS = [
+# Cache for available periods (fetched dynamically from data server)
+_available_periods_cache = None
+_available_periods_cache_time = 0
+PERIODS_CACHE_TTL = 3600  # Cache for 1 hour
+
+# Known available periods (verified to exist on server)
+KNOWN_PERIODS = [
     '202412', '202501', '202502', '202503', '202504', '202505', 
     '202506', '202507', '202508', '202509', '202510', '202511', 
-    '202512', '202601'
+    '202512', '202601', '202602'
 ]
+
+# First period to check dynamically (after known periods)
+FIRST_DYNAMIC_PERIOD = '202603'
 
 # Reference period with proper ocean masking
 REFERENCE_PERIOD = '202508'
+
+
+def get_available_periods(force_refresh=False):
+    """Get available periods - known periods + dynamically discovered ones.
+    
+    Starts with known periods (202412-202602), then checks the data server
+    for new periods starting from 202603. Stops when a period is not found.
+    """
+    global _available_periods_cache, _available_periods_cache_time
+    
+    current_time = time_module.time()
+    
+    # Return cached if still valid and not forcing refresh
+    if not force_refresh and _available_periods_cache and (current_time - _available_periods_cache_time) < PERIODS_CACHE_TTL:
+        return _available_periods_cache
+    
+    print("🔍 Checking for new periods from data server...")
+    
+    # Start with known periods
+    available = KNOWN_PERIODS.copy()
+    
+    # Parse first dynamic period
+    year = int(FIRST_DYNAMIC_PERIOD[:4])
+    month = int(FIRST_DYNAMIC_PERIOD[4:6])
+    
+    # Check for new periods until we hit one that doesn't exist
+    consecutive_failures = 0
+    max_failures = 1  # Stop after first failure (no gaps expected)
+    
+    while consecutive_failures < max_failures:
+        period = f"{year}{month:02d}"
+        url = BASE_URL_TEMPLATE.format(period=period)
+        
+        try:
+            # Try to open dataset - if it works, the period is available
+            ds = xr.open_dataset(url, engine="netcdf4")
+            ds.close()
+            available.append(period)
+            consecutive_failures = 0  # Reset on success
+            print(f"  ✅ {period} available (new)")
+        except Exception as e:
+            consecutive_failures += 1
+            print(f"  ❌ {period} not available - stopping search")
+            break
+        
+        # Next month
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    
+    _available_periods_cache = available
+    _available_periods_cache_time = current_time
+    print(f"✅ Total {len(available)} available periods")
+    
+    return _available_periods_cache
 
 # Cache for land mask - stores masks for different subsample values
 _land_mask_cache = {}
@@ -256,7 +323,7 @@ def index():
             '/api/precipitation': {
                 'method': 'GET',
                 'params': {
-                    'period': f'Period YYYYMM (options: {", ".join(AVAILABLE_PERIODS)})',
+                    'period': 'Period YYYYMM (use /api/periods to get available options)',
                     'time': 'Time index (default: 0)',
                     'masked': 'Apply ocean mask (default: false)'
                 },
@@ -265,7 +332,7 @@ def index():
             '/api/precipitation/binary': {
                 'method': 'GET',
                 'params': {
-                    'period': f'Period YYYYMM (options: {", ".join(AVAILABLE_PERIODS)})',
+                    'period': 'Period YYYYMM (use /api/periods to get available options)',
                     'time': 'Time index (default: 0)',
                     'masked': 'Apply ocean mask (default: false)'
                 },
@@ -274,7 +341,7 @@ def index():
             '/api/times': {
                 'method': 'GET',
                 'params': {
-                    'period': f'Period YYYYMM (options: {", ".join(AVAILABLE_PERIODS)})'
+                    'period': 'Period YYYYMM (use /api/periods to get available options)'
                 },
                 'description': 'Get list of available times'
             },
@@ -297,7 +364,15 @@ def index():
 
 @app.route('/api/periods', methods=['GET'])
 def get_periods():
-    return jsonify({'periods': AVAILABLE_PERIODS})
+    """Get list of available periods (dynamically fetched from data server)"""
+    refresh = request.args.get('refresh', 'false').lower() == 'true'
+    
+    periods = get_available_periods(force_refresh=refresh)
+    return jsonify({
+        'periods': periods,
+        'cached': not refresh,
+        'total': len(periods)
+    })
 
 @app.route('/api/precipitation', methods=['GET'])
 def get_precipitation():
@@ -309,8 +384,9 @@ def get_precipitation():
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
-        if period not in AVAILABLE_PERIODS:
-            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
         # Build URL
         url = BASE_URL_TEMPLATE.format(period=period)
@@ -431,8 +507,9 @@ def get_precipitation_binary():
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
-        if period not in AVAILABLE_PERIODS:
-            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
         # Use cached data (HUGE speedup for repeated requests)
         t1 = time_module.time()
@@ -484,8 +561,9 @@ def get_times():
         period = request.args.get('period', '202601')
         
         # Validate period
-        if period not in AVAILABLE_PERIODS:
-            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
         # Build URL
         url = BASE_URL_TEMPLATE.format(period=period)
@@ -525,8 +603,9 @@ def prefetch_period():
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
-        if period not in AVAILABLE_PERIODS:
-            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
         # Get dataset to find total DAYS (not raw time steps)
         ds = get_dataset(period)
@@ -620,8 +699,9 @@ def get_aggregated_precipitation_binary():
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
         # Validate period
-        if period not in AVAILABLE_PERIODS:
-            return jsonify({'error': f'Invalid period. Available: {", ".join(AVAILABLE_PERIODS)}'}), 400
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
         # Ensure end_day >= start_day
         if end_day < start_day:
@@ -734,7 +814,8 @@ def get_timeseries():
         period = request.args.get('period', '202601')  # Default to latest period
         mode = request.args.get('mode', 'day')  # 'day', '10day', or 'monthly'
         
-        if period not in AVAILABLE_PERIODS:
+        available_periods = get_available_periods()
+        if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
         # Get dataset to determine total days and find grid indices
@@ -976,6 +1057,274 @@ def get_timeseries():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/timeseries/csv', methods=['GET'])
+def download_timeseries_csv():
+    """Download time series data as CSV file.
+    
+    Parameters:
+    - lat: Latitude
+    - lon: Longitude  
+    - period: Period YYYYMM
+    - mode: Aggregation mode (day, 10day, monthly)
+    """
+    try:
+        lat = float(request.args.get('lat'))
+        lon = float(request.args.get('lon'))
+        period = request.args.get('period', '202601')
+        mode = request.args.get('mode', 'day')
+        
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Period {period} not available'}), 400
+        
+        # Get dataset
+        ds = get_dataset(period)
+        
+        if 'pr' not in ds.data_vars:
+            return jsonify({'error': "Variable 'pr' not found"}), 500
+        
+        # Get lat/lon arrays
+        lats = ds['lat'].values
+        lons = ds['lon'].values
+        
+        # Find nearest grid point
+        lat_idx = np.argmin(np.abs(lats - lat))
+        lon_idx = np.argmin(np.abs(lons - lon))
+        
+        actual_lat = float(lats[lat_idx])
+        actual_lon = float(lons[lon_idx])
+        
+        total_raw_times = len(ds.time)
+        total_days = total_raw_times // TIME_STEPS_PER_DAY
+        
+        times = ds['time'].values
+        subsample = 1
+        
+        # Build daily series from cache
+        daily_series = []
+        for day_idx in range(total_days):
+            cached = get_cached_precip_data(period, day_idx, subsample, False)
+            values_grid = cached['values']
+            precip_val = float(values_grid[lat_idx, lon_idx])
+            
+            if precip_val < -900:
+                precip_val = 0
+            
+            time_idx = day_idx * TIME_STEPS_PER_DAY
+            time_str = str(times[time_idx])[:10]
+            
+            daily_series.append({
+                'date': time_str,
+                'precipitation': round(precip_val, 2)
+            })
+        
+        # Aggregate based on mode
+        if mode == '10day':
+            time_series = []
+            for i in range(0, len(daily_series), 10):
+                chunk = daily_series[i:i+10]
+                if chunk:
+                    avg_precip = np.mean([d['precipitation'] for d in chunk])
+                    time_series.append({
+                        'start_date': chunk[0]['date'],
+                        'end_date': chunk[-1]['date'],
+                        'days': len(chunk),
+                        'precipitation': round(avg_precip, 2)
+                    })
+        elif mode == 'monthly':
+            month_data = {}
+            for d in daily_series:
+                month_key = d['date'][:7]
+                if month_key not in month_data:
+                    month_data[month_key] = []
+                month_data[month_key].append(d)
+            
+            time_series = []
+            for month_key in sorted(month_data.keys()):
+                month_days = month_data[month_key]
+                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                time_series.append({
+                    'month': month_key,
+                    'days': len(month_days),
+                    'precipitation': round(avg_precip, 2)
+                })
+        else:
+            time_series = daily_series
+        
+        # Create CSV
+        output = StringIO()
+        
+        if mode == 'day':
+            writer = csv.DictWriter(output, fieldnames=['date', 'precipitation'])
+        elif mode == '10day':
+            writer = csv.DictWriter(output, fieldnames=['start_date', 'end_date', 'days', 'precipitation'])
+        else:
+            writer = csv.DictWriter(output, fieldnames=['month', 'days', 'precipitation'])
+        
+        writer.writeheader()
+        writer.writerows(time_series)
+        
+        csv_data = output.getvalue()
+        
+        filename = f"precipitation_{period}_{mode}_lat{lat:.4f}_lon{lon:.4f}.csv"
+        
+        return Response(
+            csv_data,
+            mimetype='text/csv',
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}',
+                'Content-Type': 'text/csv'
+            }
+        )
+        
+    except ValueError:
+        return jsonify({'error': 'Invalid lat/lon coordinates'}), 400
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/timeseries/region/csv', methods=['POST'])
+def download_region_timeseries_csv():
+    """Download regional time series data as CSV file."""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No JSON data provided'}), 400
+        
+        geometry = data.get('geometry')
+        zom_name = data.get('zom_name') or data.get('province_name', 'Unknown')
+        period = data.get('period', '202601')
+        mode = data.get('mode', 'day')
+        
+        if not geometry:
+            return jsonify({'error': 'No geometry provided'}), 400
+        
+        available_periods = get_available_periods()
+        if period not in available_periods:
+            return jsonify({'error': f'Period {period} not available'}), 400
+        
+        # Get the time series data (reuse existing logic)
+        polygon = shape(geometry)
+        prepared_polygon = prep(polygon)
+        
+        ds = get_dataset(period)
+        lats = ds['lat'].values
+        lons = ds['lon'].values
+        
+        cache_key = f"{zom_name}_{len(lats)}_{len(lons)}"
+        
+        if cache_key in _zom_mask_cache:
+            region_mask = _zom_mask_cache[cache_key]
+        else:
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            points_lat = lat_grid.flatten()
+            points_lon = lon_grid.flatten()
+            
+            region_mask = np.zeros(len(points_lat), dtype=bool)
+            minx, miny, maxx, maxy = polygon.bounds
+            
+            for i in range(len(points_lat)):
+                plon, plat = points_lon[i], points_lat[i]
+                if minx <= plon <= maxx and miny <= plat <= maxy:
+                    if prepared_polygon.contains(Point(plon, plat)):
+                        region_mask[i] = True
+            
+            region_mask = region_mask.reshape(lat_grid.shape)
+            _zom_mask_cache[cache_key] = region_mask
+        
+        times = ds['time'].values
+        total_raw_times = len(times)
+        total_days = total_raw_times // TIME_STEPS_PER_DAY
+        
+        # Build daily series
+        daily_series = []
+        for day_idx in range(total_days):
+            cached = get_cached_precip_data(period, day_idx, 1, False)
+            values_grid = cached['values']
+            
+            valid_mask = (values_grid > -900) & region_mask
+            if np.sum(valid_mask) > 0:
+                regional_avg = float(np.mean(values_grid[valid_mask]))
+            else:
+                regional_avg = 0
+            
+            time_idx = day_idx * TIME_STEPS_PER_DAY
+            time_str = str(times[time_idx])[:10]
+            
+            daily_series.append({
+                'date': time_str,
+                'precipitation': round(regional_avg, 2)
+            })
+        
+        # Aggregate based on mode
+        if mode == '10day':
+            time_series = []
+            for i in range(0, len(daily_series), 10):
+                chunk = daily_series[i:i+10]
+                if chunk:
+                    avg_precip = np.mean([d['precipitation'] for d in chunk])
+                    time_series.append({
+                        'start_date': chunk[0]['date'],
+                        'end_date': chunk[-1]['date'],
+                        'days': len(chunk),
+                        'precipitation': round(avg_precip, 2)
+                    })
+        elif mode == 'monthly':
+            month_data = {}
+            for d in daily_series:
+                month_key = d['date'][:7]
+                if month_key not in month_data:
+                    month_data[month_key] = []
+                month_data[month_key].append(d)
+            
+            time_series = []
+            for month_key in sorted(month_data.keys()):
+                month_days = month_data[month_key]
+                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                time_series.append({
+                    'month': month_key,
+                    'days': len(month_days),
+                    'precipitation': round(avg_precip, 2)
+                })
+        else:
+            time_series = daily_series
+        
+        # Create CSV
+        output = StringIO()
+        
+        if mode == 'day':
+            writer = csv.DictWriter(output, fieldnames=['date', 'precipitation'])
+        elif mode == '10day':
+            writer = csv.DictWriter(output, fieldnames=['start_date', 'end_date', 'days', 'precipitation'])
+        else:
+            writer = csv.DictWriter(output, fieldnames=['month', 'days', 'precipitation'])
+        
+        writer.writeheader()
+        writer.writerows(time_series)
+        
+        csv_data = output.getvalue()
+        
+        # Clean filename
+        safe_zom_name = zom_name.replace(' ', '_').replace('(', '').replace(')', '').replace(',', '')
+        filename = f"precipitation_{period}_{mode}_{safe_zom_name}.csv"
+        
+        return Response(
+            csv_data,
+            mimetype='text/csv',
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}',
+                'Content-Type': 'text/csv'
+            }
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/zom/info', methods=['GET'])
 def get_zom_info():
     """Get information about available ZOM (Zona Musim) data.
@@ -1059,7 +1408,8 @@ def get_region_timeseries():
         if not geometry:
             return jsonify({'error': 'No geometry provided'}), 400
         
-        if period not in AVAILABLE_PERIODS:
+        available_periods = get_available_periods()
+        if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
         print(f"🗺️ Processing ZOM: {zom_name}")
@@ -1314,7 +1664,8 @@ def get_region_precipitation():
         if not geometry:
             return jsonify({'error': 'No geometry provided'}), 400
         
-        if period not in AVAILABLE_PERIODS:
+        available_periods = get_available_periods()
+        if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
         # Create Shapely polygon
