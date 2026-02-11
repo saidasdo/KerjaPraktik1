@@ -602,8 +602,8 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const map = L.map(mapRef.current, {
       maxBounds: overlayBounds,       // Restrict panning to overlay area
       maxBoundsViscosity: 1.0,        // Prevent any dragging outside bounds
-      minZoom: 5,                     // Prevent zooming out too far
-    }).setView([-2.5, 116], 4);       // Center: (-11+6)/2=-2.5, (91+141)/2=116
+      minZoom: 5,                     // Allow zooming out to see full overlay
+    }).setView([-2.5, 116], 5);       // Center and zoom to show full area
 
     // Create custom panes for proper layering
     // Order (bottom to top): tiles -> worldBorder -> precipitation -> indonesiaBorder -> markers
@@ -1500,12 +1500,14 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                             fill: true,
                             tension: 0.4,
                             pointBackgroundColor: function(context) {
+                              if (!context.parsed) return sideWindow.data.isRegion ? '#ff7800' : '#2196F3';
                               const value = context.parsed.y;
                               if (value > 10) return '#4CAF50';
                               if (value > 5) return '#FF9800';
                               return sideWindow.data.isRegion ? '#ff7800' : '#2196F3';
                             },
                             pointBorderColor: function(context) {
+                              if (!context.parsed) return sideWindow.data.isRegion ? '#ff7800' : '#2196F3';
                               const value = context.parsed.y;
                               if (value > 10) return '#4CAF50';
                               if (value > 5) return '#FF9800';
@@ -1534,8 +1536,12 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                             backgroundColor: 'rgba(0,0,0,0.8)',
                             titleColor: '#fff',
                             bodyColor: '#fff',
+                            filter: function(tooltipItem) {
+                              return tooltipItem && tooltipItem.parsed && tooltipItem.parsed.y != null;
+                            },
                             callbacks: {
                               label: function(context) {
+                                if (!context.parsed) return '';
                                 return `${context.dataset.label}: ${context.parsed.y.toFixed(2)} mm`;
                               }
                             }
@@ -1617,68 +1623,70 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     );
   };
 
-  // Mode Toggle Component
+  // Mode Toggle Component - circular image style like weather apps
   const ModeToggle = () => (
     <div style={{
       position: 'absolute',
       top: '10px',
-      left: '50px',
+      right: '10px',
       zIndex: 1000,
-      background: 'white',
-      borderRadius: '8px',
-      boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-      padding: '6px',
       display: 'flex',
-      gap: '4px'
+      flexDirection: 'column',
+      gap: '8px',
+      alignItems: 'center'
     }}>
-      <button
-        onClick={() => setClickMode('point')}
-        style={{
-          padding: '6px 12px',
-          border: 'none',
-          borderRadius: '6px',
-          cursor: 'pointer',
-          fontWeight: clickMode === 'point' ? 'bold' : 'normal',
-          background: clickMode === 'point' ? '#2196F3' : '#e0e0e0',
-          color: clickMode === 'point' ? 'white' : '#333',
-          fontSize: '12px',
-          transition: 'all 0.2s'
-        }}
-      >
-        Point
-      </button>
-      <button
-        onClick={() => setClickMode('region')}
-        style={{
-          padding: '6px 12px',
-          border: 'none',
-          borderRadius: '6px',
-          cursor: 'pointer',
-          fontWeight: clickMode === 'region' ? 'bold' : 'normal',
-          background: clickMode === 'region' ? '#ff7800' : '#e0e0e0',
-          color: clickMode === 'region' ? 'white' : '#333',
-          fontSize: '12px',
-          transition: 'all 0.2s'
-        }}
-      >
-        ZOM
-      </button>
-      <button
-        onClick={() => setClickMode('box')}
-        style={{
-          padding: '6px 12px',
-          border: 'none',
-          borderRadius: '6px',
-          cursor: 'pointer',
-          fontWeight: clickMode === 'box' ? 'bold' : 'normal',
-          background: clickMode === 'box' ? '#4CAF50' : '#e0e0e0',
-          color: clickMode === 'box' ? 'white' : '#333',
-          fontSize: '12px',
-          transition: 'all 0.2s'
-        }}
-      >
-        Box
-      </button>
+      {[
+        { mode: 'point', label: 'Point', color: '#2196F3', icon: '/icons/point.svg' },
+        { mode: 'region', label: 'ZOM', color: '#ff7800', icon: '/icons/zom.svg' },
+        { mode: 'box', label: 'Box', color: '#4CAF50', icon: '/icons/box.svg' }
+      ].map(({ mode, label, color, icon }) => (
+        <div
+          key={mode}
+          onClick={() => setClickMode(mode)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            cursor: 'pointer',
+            background: clickMode === mode ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.75)',
+            borderRadius: '25px',
+            padding: '4px 12px 4px 4px',
+            boxShadow: clickMode === mode ? '0 2px 8px rgba(0,0,0,0.3)' : '0 1px 4px rgba(0,0,0,0.15)',
+            border: clickMode === mode ? `2px solid ${color}` : '2px solid transparent',
+            transition: 'all 0.2s',
+            minWidth: '100px'
+          }}
+        >
+          <div style={{
+            width: '36px',
+            height: '36px',
+            borderRadius: '50%',
+            backgroundColor: clickMode === mode ? color : '#e0e0e0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            overflow: 'hidden',
+            flexShrink: 0
+          }}>
+            <img
+              src={icon}
+              alt={label}
+              style={{ width: '24px', height: '24px', objectFit: 'cover' }}
+              onError={(e) => {
+                // Fallback: hide broken image and show text
+                e.target.style.display = 'none';
+              }}
+            />
+          </div>
+          <span style={{
+            fontSize: '12px',
+            fontWeight: clickMode === mode ? 'bold' : 'normal',
+            color: clickMode === mode ? color : '#555'
+          }}>
+            {label}
+          </span>
+        </div>
+      ))}
     </div>
   );
 
@@ -1686,25 +1694,25 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const coordSearchBar = (
     <div style={{
       position: 'absolute',
-      top: '10px',
-      right: '10px',
+      bottom: '10px',
+      left: '10px',
       zIndex: 1000,
       background: 'white',
-      borderRadius: '8px',
+      borderRadius: '10px',
       boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-      padding: '8px 12px',
+      padding: '10px 14px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '6px',
-      minWidth: '180px'
+      gap: '8px',
+      minWidth: '260px'
     }}>
-      <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#333' }}>
+      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#333' }}>
         Search Coordinates
       </div>
-      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <input
           type="text"
-          placeholder="Lat"
+          placeholder="Latitude"
           value={coordSearch.lat}
           onChange={(e) => {
             const val = e.target.value;
@@ -1715,18 +1723,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           }}
           onKeyDown={(e) => e.key === 'Enter' && handleCoordSearch()}
           style={{
-            width: '70px',
-            padding: '5px 7px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            fontSize: '12px',
+            width: '90px',
+            padding: '8px 10px',
+            border: '1px solid #ccc',
+            borderRadius: '6px',
+            fontSize: '14px',
             MozAppearance: 'textfield',
             WebkitAppearance: 'none'
           }}
         />
         <input
           type="text"
-          placeholder="Lon"
+          placeholder="Longitude"
           value={coordSearch.lon}
           onChange={(e) => {
             const val = e.target.value;
@@ -1736,11 +1744,11 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           }}
           onKeyDown={(e) => e.key === 'Enter' && handleCoordSearch()}
           style={{
-            width: '70px',
-            padding: '5px 7px',
-            border: '1px solid #ddd',
-            borderRadius: '4px',
-            fontSize: '12px',
+            width: '90px',
+            padding: '8px 10px',
+            border: '1px solid #ccc',
+            borderRadius: '6px',
+            fontSize: '14px',
             MozAppearance: 'textfield',
             WebkitAppearance: 'none'
           }}
@@ -1748,13 +1756,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         <button
           onClick={handleCoordSearch}
           style={{
-            padding: '5px 10px',
+            padding: '8px 14px',
             background: '#2196F3',
             color: 'white',
             border: 'none',
-            borderRadius: '4px',
+            borderRadius: '6px',
             cursor: 'pointer',
-            fontSize: '12px',
+            fontSize: '14px',
             fontWeight: 'bold'
           }}
         >
@@ -1762,7 +1770,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         </button>
       </div>
       {coordError && (
-        <div style={{ color: '#f44336', fontSize: '10px' }}>{coordError}</div>
+        <div style={{ color: '#f44336', fontSize: '11px' }}>{coordError}</div>
       )}
     </div>
   );
@@ -1934,16 +1942,22 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                       titleFont: { size: 14 },
                       bodyFont: { size: 13 },
                       padding: 12,
+                      filter: function(tooltipItem) {
+                        return tooltipItem && tooltipItem.parsed && tooltipItem.parsed.y != null;
+                      },
                       callbacks: {
                         title: function(items) {
+                          if (!items || items.length === 0) return '';
                           const idx = items[0].dataIndex;
                           const item = sideWindow.data.timeSeriesData.time_series[idx];
+                          if (!item) return '';
                           if (item.end_date && item.end_date !== item.date) {
                             return `${item.date} to ${item.end_date}`;
                           }
                           return item.date;
                         },
                         label: function(context) {
+                          if (!context.parsed) return '';
                           return `Precipitation: ${context.parsed.y.toFixed(2)} mm/day`;
                         },
                         afterLabel: function(context) {
