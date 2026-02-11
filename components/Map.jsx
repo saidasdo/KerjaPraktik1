@@ -299,7 +299,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const mode = getApiMode();
     try {
       const timeSeriesResponse = await fetch(
-        `http://localhost:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
+        `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
       );
       if (timeSeriesResponse.ok) {
         const timeSeriesData = await timeSeriesResponse.json();
@@ -401,7 +401,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const mode = getApiMode();
     try {
       const timeSeriesResponse = await fetch(
-        `http://localhost:5000/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+        `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
       );
       if (timeSeriesResponse.ok) {
         timeSeriesData = await timeSeriesResponse.json();
@@ -446,7 +446,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     try {
       if (sideWindow.data.isRegion) {
         // Region CSV download
-        const response = await fetch('http://localhost:5000/api/timeseries/region/csv', {
+        const response = await fetch('http://172.19.1.191:5000/api/timeseries/region/csv', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -476,7 +476,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         const lon = sideWindow.data.lng;
         
         const response = await fetch(
-          `http://localhost:5000/api/timeseries/csv?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+          `http://172.19.1.191:5000/api/timeseries/csv?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
         );
         
         if (response.ok) {
@@ -522,7 +522,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       if (sideWindow.data.isRegion && sideWindow.data.geometry) {
         // Refresh region data
         try {
-          const response = await fetch('http://localhost:5000/api/timeseries/region', {
+          const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -556,7 +556,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         // Refresh point data
         try {
           const timeSeriesResponse = await fetch(
-            `http://localhost:5000/api/timeseries?lat=${sideWindow.data.lat}&lon=${sideWindow.data.lng}&period=${period}&mode=${mode}`
+            `http://172.19.1.191:5000/api/timeseries?lat=${sideWindow.data.lat}&lon=${sideWindow.data.lng}&period=${period}&mode=${mode}`
           );
           if (timeSeriesResponse.ok) {
             const timeSeriesData = await timeSeriesResponse.json();
@@ -599,11 +599,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       L.latLng(6, 141)     // Northeast corner
     );
 
+    // Tighter bounds to match the red box area (more zoomed in, cropping edges)
+    const restrictedBounds = L.latLngBounds(
+      [-10, 96],   // Southwest corner (crop 1 degree from bottom and left)
+      [5, 140]     // Northeast corner (crop 1 degree from top and right)
+    );
+
     const map = L.map(mapRef.current, {
-      maxBounds: overlayBounds,       // Restrict panning to overlay area
+      maxBounds: restrictedBounds,    // Restrict panning to tighter area
       maxBoundsViscosity: 1.0,        // Prevent any dragging outside bounds
-      minZoom: 5,                     // Allow zooming out to see full overlay
-    }).setView([-2.5, 116], 5);       // Center and zoom to show full area
+      minZoom: 5.3,                   // Prevent zooming out too far (was 5)
+      maxZoom: 10,                    // Allow zooming in
+    }).setView([-2.5, 118], 5.3);     // Center on Indonesia, slightly more zoomed in
 
     // Create custom panes for proper layering
     // Order (bottom to top): tiles -> worldBorder -> precipitation -> indonesiaBorder -> markers
@@ -764,19 +771,25 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const map = mapInstanceRef.current;
     const bounds = precipData.bounds;
     
-    // bounds is an object: { minLat, maxLat, minLon, maxLon }
-    const dataBounds = L.latLngBounds(
-      [bounds.minLat, bounds.minLon],  // Southwest
-      [bounds.maxLat, bounds.maxLon]   // Northeast
+    // Create tighter bounds (crop edges by 1 degree)
+    const restrictedBounds = L.latLngBounds(
+      [Math.max(bounds.minLat, -10), Math.max(bounds.minLon, 96)],  // Southwest
+      [Math.min(bounds.maxLat, 5), Math.min(bounds.maxLon, 140)]    // Northeast
     );
     
-    // Update map maxBounds to match actual data
-    map.setMaxBounds(dataBounds);
+    // Update map maxBounds to match restricted area
+    map.setMaxBounds(restrictedBounds);
     
-    // Fit the map view to show the entire precipitation layer
-    map.fitBounds(dataBounds, { padding: [20, 20] });
+    // Fit the map view to show the precipitation layer, but respect minZoom
+    map.fitBounds(restrictedBounds, { 
+      padding: [20, 20],
+      maxZoom: 5.3  // Don't zoom out beyond this level
+    });
     
-    console.log('Map centered on precipitation bounds:', bounds);
+    console.log('Map centered on restricted bounds:', {
+      original: bounds,
+      restricted: restrictedBounds.toBBoxString()
+    });
   }, [precipData]);
 
   // Create/update clickable ZOM layer when mode changes
@@ -927,7 +940,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             // Fetch regional time series
             const mode = getApiMode();
             try {
-              const response = await fetch('http://localhost:5000/api/timeseries/region', {
+              const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1070,7 +1083,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       const mode = getApiMode();
       try {
         const timeSeriesResponse = await fetch(
-          `http://localhost:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
+          `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
         );
         if (timeSeriesResponse.ok) {
           timeSeriesData = await timeSeriesResponse.json();
@@ -1225,7 +1238,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       };
       
       try {
-        const response = await fetch('http://localhost:5000/api/timeseries/region', {
+        const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
