@@ -114,7 +114,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const mapInstanceRef = useRef(null);
   const [mapReady, setMapReady] = useState(false);
   const [clickInfo, setClickInfo] = useState(null);
-  const [sideWindow, setSideWindow] = useState({ visible: false, data: null, loading: false });
+  const [sideWindow, setSideWindow] = useState({ visible: false, data: null, loading: false, timeSeriesLoading: false });
   const [showChartPopup, setShowChartPopup] = useState(false);
   const markerRef = useRef(null);
   const [clickMode, setClickMode] = useState('point'); // 'point', 'region', or 'box'
@@ -280,7 +280,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const refreshTimeSeriesData = async () => {
     if (!sideWindow.data) return;
     
-    setSideWindow(prev => ({ ...prev, loading: true }));
+    setSideWindow(prev => ({ ...prev, timeSeriesLoading: true }));
     
     const { lat, lng } = sideWindow.data;
     const mode = getApiMode();
@@ -292,13 +292,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         const timeSeriesData = await timeSeriesResponse.json();
         setSideWindow(prev => ({
           ...prev,
-          loading: false,
+          timeSeriesLoading: false,
           data: { ...prev.data, timeSeriesData }
         }));
       } else {
         setSideWindow(prev => ({
           ...prev,
-          loading: false,
+          timeSeriesLoading: false,
           data: { ...prev.data, timeSeriesData: null }
         }));
       }
@@ -306,7 +306,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       console.error('Error fetching time series:', error);
       setSideWindow(prev => ({
         ...prev,
-        loading: false,
+        timeSeriesLoading: false,
         data: { ...prev.data, timeSeriesData: null }
       }));
     }
@@ -347,47 +347,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       selectedZomRef.current = null;
     }
     
-    setSideWindow({ visible: true, data: null, loading: true });
-    
     map.setView([lat, lon], 8);
     
     const precip = getPrecipitationAt(lat, lon);
-    
-    let locationName = 'Custom Location';
-    let locationDetails = { city: '', province: '', country: '' };
-    
-    try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`,
-        { headers: { 'User-Agent': 'PrecipitationMap/1.0' } }
-      );
-      const data = await response.json();
-      
-      if (data && data.address) {
-        const addr = data.address;
-        locationDetails.city = addr.city || addr.town || addr.village || addr.municipality || '';
-        locationDetails.province = addr.state || addr.province || '';
-        locationDetails.country = addr.country || '';
-        
-        const parts = [locationDetails.city, locationDetails.province, locationDetails.country].filter(Boolean);
-        locationName = parts.join(', ') || 'Custom Location';
-      }
-    } catch (error) {
-      console.error('Error fetching location:', error);
-    }
-    
-    let timeSeriesData = null;
-    const mode = getApiMode();
-    try {
-      const timeSeriesResponse = await fetch(
-        `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
-      );
-      if (timeSeriesResponse.ok) {
-        timeSeriesData = await timeSeriesResponse.json();
-      }
-    } catch (error) {
-      console.error('Error fetching time series:', error);
-    }
     
     const marker = L.marker([lat, lon]).addTo(map);
     markerRef.current = marker;
@@ -395,14 +357,15 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     setSideWindow({
       visible: true,
       loading: false,
+      timeSeriesLoading: true,
       data: {
         isRegion: false,
         lat: lat.toFixed(4),
         lng: lon.toFixed(4),
-        locationName,
-        locationDetails,
+        locationName: 'Loading...',
+        locationDetails: { city: '', province: '', country: '' },
         currentPrecip: precip ? precip.toFixed(2) : null,
-        timeSeriesData,
+        timeSeriesData: null,
         isCustomCoord: true
       }
     });
@@ -412,6 +375,47 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       lon: lon.toFixed(4),
       precip: precip ? precip.toFixed(2) : null
     });
+
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10&addressdetails=1`,
+        { headers: { 'User-Agent': 'PrecipitationMap/1.0' } }
+      );
+      const data = await response.json();
+      if (data && data.address) {
+        const addr = data.address;
+        const city = addr.city || addr.town || addr.village || addr.municipality || '';
+        const province = addr.state || addr.province || '';
+        const country = addr.country || '';
+        const parts = [city, province, country].filter(Boolean);
+        setSideWindow(prev => ({
+          ...prev,
+          data: {
+            ...prev.data,
+            locationName: parts.join(', ') || 'Custom Location',
+            locationDetails: { city, province, country }
+          }
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching location:', error);
+    }
+    
+    const mode = getApiMode();
+    try {
+      const timeSeriesResponse = await fetch(
+        `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+      );
+      if (timeSeriesResponse.ok) {
+        const timeSeriesData = await timeSeriesResponse.json();
+        setSideWindow(prev => ({ ...prev, timeSeriesLoading: false, data: { ...prev.data, timeSeriesData } }));
+      } else {
+        setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
+      }
+    } catch (error) {
+      console.error('Error fetching time series:', error);
+      setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
+    }
   };
 
   const downloadCSV = async () => {
@@ -478,10 +482,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     if (!sideWindow.visible || !sideWindow.data || sideWindow.loading) return;
     
     const refreshData = async () => {
-      setSideWindow(prev => ({ ...prev, loading: true }));
+      setSideWindow(prev => ({ ...prev, timeSeriesLoading: true }));
       const mode = getApiMode();
       
-      // Update current precipitation for point mode
       if (!sideWindow.data.isRegion && sideWindow.data.lat && sideWindow.data.lng) {
         const lat = parseFloat(sideWindow.data.lat);
         const lng = parseFloat(sideWindow.data.lng);
@@ -496,7 +499,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       }
       
       if (sideWindow.data.isRegion && sideWindow.data.geometry) {
-        // Refresh region data
         try {
           const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
             method: 'POST',
@@ -513,7 +515,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             const regionData = await response.json();
             setSideWindow(prev => ({
               ...prev,
-              loading: false,
+              timeSeriesLoading: false,
               data: {
                 ...prev.data,
                 timeSeriesData: regionData,
@@ -522,14 +524,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               }
             }));
           } else {
-            setSideWindow(prev => ({ ...prev, loading: false }));
+            setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
           }
         } catch (error) {
           console.error('Error refreshing region data:', error);
-          setSideWindow(prev => ({ ...prev, loading: false }));
+          setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
         }
       } else if (sideWindow.data.lat && sideWindow.data.lng) {
-        // Refresh point data
         try {
           const timeSeriesResponse = await fetch(
             `http://172.19.1.191:5000/api/timeseries?lat=${sideWindow.data.lat}&lon=${sideWindow.data.lng}&period=${period}&mode=${mode}`
@@ -538,18 +539,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             const timeSeriesData = await timeSeriesResponse.json();
             setSideWindow(prev => ({
               ...prev,
-              loading: false,
+              timeSeriesLoading: false,
               data: { ...prev.data, timeSeriesData }
             }));
           } else {
-            setSideWindow(prev => ({ ...prev, loading: false }));
+            setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
           }
         } catch (error) {
           console.error('Error refreshing time series:', error);
-          setSideWindow(prev => ({ ...prev, loading: false }));
+          setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
         }
       } else {
-        setSideWindow(prev => ({ ...prev, loading: false }));
+        setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
       }
     };
     
@@ -889,7 +890,24 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               }
             }).addTo(map);
             
-            setSideWindow({ visible: true, data: null, loading: true });
+            setSideWindow({
+              visible: true,
+              loading: false,
+              timeSeriesLoading: true,
+              data: {
+                isRegion: true,
+                zomName: zomName,
+                zomId: zomId,
+                province: province,
+                island: island,
+                climateType: climateType,
+                seasonType: seasonType,
+                geometry: feature.geometry,
+                numGridPoints: null,
+                timeSeriesData: null,
+                processingTime: null
+              }
+            });
             
             const mode = getApiMode();
             try {
@@ -911,39 +929,31 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               
               if (response.ok) {
                 const regionData = await response.json();
-                
-                setSideWindow({
-                  visible: true,
-                  loading: false,
+                setSideWindow(prev => ({
+                  ...prev,
+                  timeSeriesLoading: false,
                   data: {
-                    isRegion: true,
-                    zomName: zomName,
-                    zomId: zomId,
-                    province: province,
-                    island: island,
-                    climateType: climateType,
-                    seasonType: seasonType,
-                    geometry: feature.geometry,  // Store geometry for refresh
+                    ...prev.data,
                     numGridPoints: regionData.num_grid_points,
                     timeSeriesData: regionData,
                     processingTime: regionData.processing_time_seconds
                   }
-                });
+                }));
               } else {
                 const error = await response.json();
-                setSideWindow({
-                  visible: true,
-                  loading: false,
-                  data: { error: error.error || 'Failed to fetch regional data' }
-                });
+                setSideWindow(prev => ({
+                  ...prev,
+                  timeSeriesLoading: false,
+                  data: { ...prev.data, error: error.error || 'Failed to fetch regional data' }
+                }));
               }
             } catch (error) {
               console.error('Error fetching regional data:', error);
-              setSideWindow({
-                visible: true,
-                loading: false,
-                data: { error: 'Network error fetching regional data' }
-              });
+              setSideWindow(prev => ({
+                ...prev,
+                timeSeriesLoading: false,
+                data: { ...prev.data, error: 'Network error fetching regional data' }
+              }));
             }
           });
         }
@@ -993,74 +1003,73 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         selectedZomRef.current = null;
       }
 
-      setSideWindow({ visible: true, data: null, loading: true });
-
-      let locationName = 'Loading...';
-      let locationDetails = { city: '', province: '', country: '' };
-      
-      try {
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
-          {
-            headers: {
-              'User-Agent': 'PrecipitationMap/1.0'
-            }
-          }
-        );
-        const data = await response.json();
-        
-        if (data && data.address) {
-          const addr = data.address;
-          locationDetails.city = addr.city || addr.town || addr.village || addr.municipality || '';
-          locationDetails.province = addr.state || addr.province || '';
-          locationDetails.country = addr.country || '';
-          
-          const parts = [locationDetails.city, locationDetails.province, locationDetails.country].filter(Boolean);
-          locationName = parts.join(', ') || 'Unknown location';
-        } else {
-          locationName = 'Unknown location';
-        }
-      } catch (error) {
-        console.error('Error fetching location:', error);
-        locationName = 'Location unavailable';
-      }
-
-      let timeSeriesData = null;
-      const mode = getApiMode();
-      try {
-        const timeSeriesResponse = await fetch(
-          `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
-        );
-        if (timeSeriesResponse.ok) {
-          timeSeriesData = await timeSeriesResponse.json();
-        }
-      } catch (error) {
-        console.error('Error fetching time series:', error);
-      }
-
       const marker = L.marker([lat, lng]).addTo(map);
       markerRef.current = marker;
 
       setSideWindow({
         visible: true,
         loading: false,
+        timeSeriesLoading: true,
         data: {
           isRegion: false,
           lat: lat.toFixed(4),
           lng: lng.toFixed(4),
-          locationName,
-          locationDetails,
+          locationName: 'Loading...',
+          locationDetails: { city: '', province: '', country: '' },
           currentPrecip: precip ? precip.toFixed(2) : null,
-          timeSeriesData
+          timeSeriesData: null
         }
       });
 
-      // Update state for backward compatibility
       setClickInfo({
         lat: lat.toFixed(4),
         lon: lng.toFixed(4),
         precip: precip ? precip.toFixed(2) : null
       });
+
+      try {
+        const response = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
+          { headers: { 'User-Agent': 'PrecipitationMap/1.0' } }
+        );
+        const data = await response.json();
+        if (data && data.address) {
+          const addr = data.address;
+          const city = addr.city || addr.town || addr.village || addr.municipality || '';
+          const province = addr.state || addr.province || '';
+          const country = addr.country || '';
+          const parts = [city, province, country].filter(Boolean);
+          setSideWindow(prev => ({
+            ...prev,
+            data: {
+              ...prev.data,
+              locationName: parts.join(', ') || 'Unknown location',
+              locationDetails: { city, province, country }
+            }
+          }));
+        } else {
+          setSideWindow(prev => ({ ...prev, data: { ...prev.data, locationName: 'Unknown location' } }));
+        }
+      } catch (error) {
+        console.error('Error fetching location:', error);
+        setSideWindow(prev => ({ ...prev, data: { ...prev.data, locationName: 'Location unavailable' } }));
+      }
+
+      const mode = getApiMode();
+      try {
+        const timeSeriesResponse = await fetch(
+          `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
+        );
+        if (timeSeriesResponse.ok) {
+          const timeSeriesData = await timeSeriesResponse.json();
+          setSideWindow(prev => ({ ...prev, timeSeriesLoading: false, data: { ...prev.data, timeSeriesData } }));
+        } else {
+          setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
+        }
+      } catch (error) {
+        console.error('Error fetching time series:', error);
+        setSideWindow(prev => ({ ...prev, timeSeriesLoading: false }));
+      }
     };
 
     map.on('click', handleClick);
@@ -1108,7 +1117,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     
     const onMouseDown = (e) => {
       cleanupBox();
-      setSideWindow({ visible: false, data: null, loading: false });
+      setSideWindow({ visible: false, data: null, loading: false, timeSeriesLoading: false });
       
       boxStartRef.current = e.latlng;
       isDrawingBoxRef.current = true;
@@ -1163,8 +1172,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         L.rectangle([L.latLng(sw.lat, ne.lng), L.latLng(ne.lat, mapBounds.getEast())], maskStyle).addTo(map),
       ];
       
-      setSideWindow({ visible: true, data: null, loading: true });
-      
       const mode = getApiMode();
       const geometry = {
         type: 'Polygon',
@@ -1176,6 +1183,25 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           [sw.lng, sw.lat]
         ]]
       };
+      
+      setSideWindow({
+        visible: true,
+        loading: false,
+        timeSeriesLoading: true,
+        data: {
+          isRegion: true,
+          zomName: `Box Select`,
+          zomId: `[${sw.lat.toFixed(2)}, ${sw.lng.toFixed(2)}] to [${ne.lat.toFixed(2)}, ${ne.lng.toFixed(2)}]`,
+          province: '',
+          island: '',
+          climateType: '',
+          seasonType: '',
+          geometry: geometry,
+          numGridPoints: null,
+          timeSeriesData: null,
+          processingTime: null
+        }
+      });
       
       try {
         const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
@@ -1196,30 +1222,23 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         
         if (response.ok) {
           const regionData = await response.json();
-          setSideWindow({
-            visible: true,
-            loading: false,
+          setSideWindow(prev => ({
+            ...prev,
+            timeSeriesLoading: false,
             data: {
-              isRegion: true,
-              zomName: `Box Select`,
-              zomId: `[${sw.lat.toFixed(2)}, ${sw.lng.toFixed(2)}] to [${ne.lat.toFixed(2)}, ${ne.lng.toFixed(2)}]`,
-              province: '',
-              island: '',
-              climateType: '',
-              seasonType: '',
-              geometry: geometry,
+              ...prev.data,
               numGridPoints: regionData.num_grid_points,
               timeSeriesData: regionData,
               processingTime: regionData.processing_time_seconds
             }
-          });
+          }));
         } else {
           const error = await response.json();
-          setSideWindow({ visible: true, loading: false, data: { error: error.error || 'Failed to fetch box data' } });
+          setSideWindow(prev => ({ ...prev, timeSeriesLoading: false, data: { ...prev.data, error: error.error || 'Failed to fetch box data' } }));
         }
       } catch (error) {
         console.error('Error fetching box region data:', error);
-        setSideWindow({ visible: true, loading: false, data: { error: 'Network error fetching box data' } });
+        setSideWindow(prev => ({ ...prev, timeSeriesLoading: false, data: { ...prev.data, error: 'Network error fetching box data' } }));
       }
     };
     
@@ -1261,7 +1280,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <h2 style={{ margin: 0, fontSize: '18px', color: '#333' }}>Error</h2>
             <button 
-              onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
+              onClick={() => setSideWindow({ visible: false, data: null, loading: false, timeSeriesLoading: false })}
               style={{ background: '#f44336', color: 'white', border: 'none', borderRadius: '3px', padding: '8px 16px', cursor: 'pointer', fontSize: '14px' }}
             >Close</button>
           </div>
@@ -1290,7 +1309,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             {sideWindow.data?.isRegion ? 'Regional Data' : 'Location Details'}
           </h2>
           <button 
-            onClick={() => setSideWindow({ visible: false, data: null, loading: false })}
+            onClick={() => setSideWindow({ visible: false, data: null, loading: false, timeSeriesLoading: false })}
             style={{
               background: '#f44336',
               color: 'white',
@@ -1305,16 +1324,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           </button>
         </div>
 
-        {sideWindow.loading ? (
-          <div style={{ textAlign: 'center', padding: '40px' }}>
-            <div>Loading {sideWindow.data?.isRegion ? 'regional' : 'location'} data...</div>
-            <div style={{ fontSize: '12px', color: '#666', marginTop: '10px' }}>
-              {clickMode === 'region' && 'First request may take a few seconds...'}
-            </div>
-          </div>
-        ) : sideWindow.data ? (
+        {sideWindow.data ? (
           <div>
-            {/* Basic Information - Different for Region vs Point */}
+            {/* Basic Information - Always shown immediately */}
             <div style={{ marginBottom: '25px', padding: '15px', background: sideWindow.data.isRegion ? '#fff3e0' : '#f8f9fa', borderRadius: '5px' }}>
               <h3 style={{ margin: '0 0 10px 0', fontSize: '16px', color: '#2c3e50' }}>
                 {sideWindow.data.isRegion ? 'Zona Musim (ZOM)' : 'Basic Information'}
@@ -1332,8 +1344,12 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                     {sideWindow.data.climateType}<br/><br/>
                     <strong>Season Type:</strong><br/>
                     {sideWindow.data.seasonType}<br/><br/>
-                    <strong>Grid Points:</strong><br/>
-                    {sideWindow.data.numGridPoints} data points averaged<br/><br/>
+                    {sideWindow.data.numGridPoints != null && (
+                      <>
+                        <strong>Grid Points:</strong><br/>
+                        {sideWindow.data.numGridPoints} data points averaged<br/><br/>
+                      </>
+                    )}
                     {sideWindow.data.processingTime && (
                       <>
                         <strong>Processing Time:</strong><br/>
@@ -1359,8 +1375,16 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               </div>
             </div>
 
-            {/* Time Series Data */}
-            {(sideWindow.data.timeSeriesData) ? (
+            {/* Time Series Data - Shows loading spinner while fetching */}
+            {sideWindow.timeSeriesLoading ? (
+              <div style={{ textAlign: 'center', padding: '40px', background: '#f8f9fa', borderRadius: '5px' }}>
+                <div style={{ fontSize: '24px', marginBottom: '10px' }}>⏳</div>
+                <div style={{ color: '#555', fontSize: '14px' }}>Loading time series data...</div>
+                <div style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+                  {sideWindow.data.isRegion ? 'Processing regional average, this may take a moment...' : 'Fetching precipitation history...'}
+                </div>
+              </div>
+            ) : (sideWindow.data.timeSeriesData) ? (
               <div>
                 <div style={{ marginBottom: '15px' }}>
                   <h3 style={{ margin: 0, fontSize: '16px', color: '#2c3e50' }}>
