@@ -1505,7 +1505,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                         }),
                         datasets: [
                           {
-                            label: sideWindow.data.isRegion ? 'Regional Avg Precipitation (mm)' : 'Daily Precipitation (mm)',
+                            label: sideWindow.data.isRegion 
+                              ? (dataRange === 'daily' ? 'Regional Avg Precipitation (mm/day)' : 'Regional Precipitation Sum (mm)')
+                              : (dataRange === 'daily' ? 'Precipitation (mm/day)' : 'Precipitation Sum (mm)'),
                             data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation),
                             borderColor: sideWindow.data.isRegion ? '#ff7800' : '#2196F3',
                             backgroundColor: sideWindow.data.isRegion ? 'rgba(255, 120, 0, 0.1)' : 'rgba(33, 150, 243, 0.1)',
@@ -1707,25 +1709,26 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const coordSearchBar = (
     <div style={{
       position: 'absolute',
-      bottom: '10px',
-      left: '10px',
+      bottom: isMobile ? '5px' : '10px',
+      left: isMobile ? '5px' : '10px',
+      right: isMobile ? '5px' : 'auto',
       zIndex: 1000,
       background: 'white',
       borderRadius: '10px',
       boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-      padding: '10px 14px',
+      padding: isMobile ? '8px 10px' : '10px 14px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '8px',
-      minWidth: '260px'
+      gap: isMobile ? '6px' : '8px',
+      minWidth: isMobile ? 'auto' : '260px'
     }}>
-      <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#333' }}>
+      <div style={{ fontSize: isMobile ? '11px' : '13px', fontWeight: 'bold', color: '#333' }}>
         Search Coordinates
       </div>
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: isMobile ? '4px' : '8px', alignItems: 'center' }}>
         <input
           type="text"
-          placeholder="Latitude"
+          placeholder="Lat"
           value={coordSearch.lat}
           onChange={(e) => {
             const val = e.target.value;
@@ -1736,18 +1739,19 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           }}
           onKeyDown={(e) => e.key === 'Enter' && handleCoordSearch()}
           style={{
-            width: '90px',
-            padding: '8px 10px',
+            flex: 1,
+            minWidth: 0,
+            padding: isMobile ? '6px 8px' : '8px 10px',
             border: '1px solid #ccc',
             borderRadius: '6px',
-            fontSize: '14px',
+            fontSize: isMobile ? '13px' : '14px',
             MozAppearance: 'textfield',
             WebkitAppearance: 'none'
           }}
         />
         <input
           type="text"
-          placeholder="Longitude"
+          placeholder="Lon"
           value={coordSearch.lon}
           onChange={(e) => {
             const val = e.target.value;
@@ -1757,11 +1761,12 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           }}
           onKeyDown={(e) => e.key === 'Enter' && handleCoordSearch()}
           style={{
-            width: '90px',
-            padding: '8px 10px',
+            flex: 1,
+            minWidth: 0,
+            padding: isMobile ? '6px 8px' : '8px 10px',
             border: '1px solid #ccc',
             borderRadius: '6px',
-            fontSize: '14px',
+            fontSize: isMobile ? '13px' : '14px',
             MozAppearance: 'textfield',
             WebkitAppearance: 'none'
           }}
@@ -1769,14 +1774,15 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         <button
           onClick={handleCoordSearch}
           style={{
-            padding: '8px 14px',
+            padding: isMobile ? '6px 10px' : '8px 14px',
             background: '#2196F3',
             color: 'white',
             border: 'none',
             borderRadius: '6px',
             cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: 'bold'
+            fontSize: isMobile ? '13px' : '14px',
+            fontWeight: 'bold',
+            flexShrink: 0
           }}
         >
           Go
@@ -1922,7 +1928,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                   }),
                   datasets: [
                     {
-                      label: sideWindow.data.isRegion ? 'Regional Avg Precipitation (mm/day)' : 'Precipitation (mm/day)',
+                      label: sideWindow.data.isRegion 
+                        ? (dataRange === 'daily' ? 'Regional Avg Precipitation (mm/day)' : 'Regional Precipitation Sum (mm)')
+                        : (dataRange === 'daily' ? 'Precipitation (mm/day)' : 'Precipitation Sum (mm)'),
                       data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation),
                       borderColor: sideWindow.data.isRegion ? '#ff7800' : '#2196F3',
                       backgroundColor: sideWindow.data.isRegion ? 'rgba(255, 120, 0, 0.15)' : 'rgba(33, 150, 243, 0.15)',
@@ -1971,13 +1979,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                         },
                         label: function(context) {
                           if (!context.parsed) return '';
-                          return `Precipitation: ${context.parsed.y.toFixed(2)} mm/day`;
+                          return `Precipitation: ${context.parsed.y.toFixed(2)} mm`;
                         },
                         afterLabel: function(context) {
                           const idx = context.dataIndex;
                           const item = sideWindow.data.timeSeriesData.time_series[idx];
-                          if (item.days) {
-                            return `(${item.days} days averaged)`;
+                          if (item && item.days && item.average != null) {
+                            return `(${item.days} days summed, avg: ${item.average} mm/day)`;
                           }
                           return '';
                         }
@@ -2007,7 +2015,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                       display: true,
                       title: {
                         display: true,
-                        text: 'Precipitation (mm/day)',
+                        text: dataRange === 'daily' ? 'Precipitation (mm/day)' : 'Precipitation (mm)',
                         font: { size: 14, weight: 'bold' },
                         padding: 10
                       },

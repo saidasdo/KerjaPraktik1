@@ -967,12 +967,14 @@ def get_timeseries():
         if mode == 'day':
             time_series = daily_series
         elif mode == '10day':
-            # Group into 10-day periods (dekads)
+            # Group into 10-day periods (dekads) - use SUM
             time_series = []
             for i in range(0, len(daily_series), 10):
                 chunk = daily_series[i:i+10]
                 if chunk:
-                    avg_precip = np.mean([d['precipitation'] for d in chunk])
+                    precip_values = [d['precipitation'] for d in chunk]
+                    sum_precip = np.sum(precip_values)
+                    avg_precip = np.mean(precip_values)
                     # Collect all original indices
                     all_indices = []
                     for d in chunk:
@@ -984,11 +986,12 @@ def get_timeseries():
                         'start_index': min(all_indices),
                         'end_index': max(all_indices),
                         'days': len(chunk),
-                        'precipitation': round(avg_precip, 2),
+                        'precipitation': round(float(sum_precip), 2),
+                        'average': round(float(avg_precip), 2),
                         'label': f"Days {i+1}-{min(i+10, len(daily_series))}"
                     })
         elif mode == 'monthly':
-            # Group by actual calendar month
+            # Group by actual calendar month - use SUM
             month_data = {}  # 'YYYY-MM' -> list of daily values
             for d in daily_series:
                 month_key = d['date'][:7]  # 'YYYY-MM'
@@ -999,7 +1002,9 @@ def get_timeseries():
             time_series = []
             for month_key in sorted(month_data.keys()):
                 month_days = month_data[month_key]
-                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                precip_values = [d['precipitation'] for d in month_days]
+                sum_precip = np.sum(precip_values)
+                avg_precip = np.mean(precip_values)
                 # Collect all original indices
                 all_indices = []
                 for d in month_days:
@@ -1010,7 +1015,8 @@ def get_timeseries():
                     'date': month_days[0]['date'],
                     'end_date': month_days[-1]['date'],
                     'days': len(month_days),
-                    'precipitation': round(avg_precip, 2),
+                    'precipitation': round(float(sum_precip), 2),
+                    'average': round(float(avg_precip), 2),
                     'label': f"{month_key} ({len(month_days)} days)"
                 }
                 if all_indices:
@@ -1264,12 +1270,15 @@ def download_region_timeseries_csv():
             for i in range(0, len(daily_series), 10):
                 chunk = daily_series[i:i+10]
                 if chunk:
-                    avg_precip = np.mean([d['precipitation'] for d in chunk])
+                    precip_values = [d['precipitation'] for d in chunk]
+                    sum_precip = np.sum(precip_values)
+                    avg_precip = np.mean(precip_values)
                     time_series.append({
                         'start_date': chunk[0]['date'],
                         'end_date': chunk[-1]['date'],
                         'days': len(chunk),
-                        'precipitation': round(avg_precip, 2)
+                        'precipitation_sum': round(float(sum_precip), 2),
+                        'precipitation_avg': round(float(avg_precip), 2)
                     })
         elif mode == 'monthly':
             month_data = {}
@@ -1282,11 +1291,14 @@ def download_region_timeseries_csv():
             time_series = []
             for month_key in sorted(month_data.keys()):
                 month_days = month_data[month_key]
-                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                precip_values = [d['precipitation'] for d in month_days]
+                sum_precip = np.sum(precip_values)
+                avg_precip = np.mean(precip_values)
                 time_series.append({
                     'month': month_key,
                     'days': len(month_days),
-                    'precipitation': round(avg_precip, 2)
+                    'precipitation_sum': round(float(sum_precip), 2),
+                    'precipitation_avg': round(float(avg_precip), 2)
                 })
         else:
             time_series = daily_series
@@ -1297,9 +1309,9 @@ def download_region_timeseries_csv():
         if mode == 'day':
             writer = csv.DictWriter(output, fieldnames=['date', 'precipitation'])
         elif mode == '10day':
-            writer = csv.DictWriter(output, fieldnames=['start_date', 'end_date', 'days', 'precipitation'])
+            writer = csv.DictWriter(output, fieldnames=['start_date', 'end_date', 'days', 'precipitation_sum', 'precipitation_avg'])
         else:
-            writer = csv.DictWriter(output, fieldnames=['month', 'days', 'precipitation'])
+            writer = csv.DictWriter(output, fieldnames=['month', 'days', 'precipitation_sum', 'precipitation_avg'])
         
         writer.writeheader()
         writer.writerows(time_series)
@@ -1577,20 +1589,24 @@ def get_region_timeseries():
         if mode == 'day':
             time_series = daily_series
         elif mode == '10day':
+            # Group into 10-day periods (dekads) - use SUM
             time_series = []
             for i in range(0, len(daily_series), 10):
                 chunk = daily_series[i:i+10]
                 if chunk:
-                    avg_precip = np.mean([d['precipitation'] for d in chunk])
+                    precip_values = [d['precipitation'] for d in chunk]
+                    sum_precip = np.sum(precip_values)
+                    avg_precip = np.mean(precip_values)
                     time_series.append({
                         'date': chunk[0]['date'],
                         'end_date': chunk[-1]['date'],
                         'days': len(chunk),
-                        'precipitation': round(avg_precip, 2),
+                        'precipitation': round(float(sum_precip), 2),
+                        'average': round(float(avg_precip), 2),
                         'label': f"Days {i+1}-{min(i+10, len(daily_series))}"
                     })
         elif mode == 'monthly':
-            # Group by actual calendar month
+            # Group by actual calendar month - use SUM
             month_data = {}  # 'YYYY-MM' -> list of daily values
             for d in daily_series:
                 month_key = d['date'][:7]  # 'YYYY-MM'
@@ -1601,12 +1617,15 @@ def get_region_timeseries():
             time_series = []
             for month_key in sorted(month_data.keys()):
                 month_days = month_data[month_key]
-                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                precip_values = [d['precipitation'] for d in month_days]
+                sum_precip = np.sum(precip_values)
+                avg_precip = np.mean(precip_values)
                 time_series.append({
                     'date': month_days[0]['date'],
                     'end_date': month_days[-1]['date'],
                     'days': len(month_days),
-                    'precipitation': round(avg_precip, 2),
+                    'precipitation': round(float(sum_precip), 2),
+                    'average': round(float(avg_precip), 2),
                     'label': f"{month_key} ({len(month_days)} days)"
                 })
         else:
