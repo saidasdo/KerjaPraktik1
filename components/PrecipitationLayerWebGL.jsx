@@ -1,0 +1,336 @@
+import { useEffect, useRef } from 'react';
+
+// WebGL Shaders
+const VERTEX_SHADER = `
+  attribute vec2 a_position;
+  attribute vec2 a_texCoord;
+  varying vec2 v_texCoord;
+  
+  void main() {
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_texCoord = a_texCoord;
+  }
+`;
+
+const FRAGMENT_SHADER = `
+  precision highp float;
+  
+  varying vec2 v_texCoord;
+  uniform sampler2D u_data;
+  uniform vec2 u_dataSize;
+  uniform float u_opacity;
+  uniform float u_maxPrecip; 
+  
+  // Fixed color bands matching legend thresholds (mm)
+  // Scale: t * 600.0 = precipitation in mm
+  vec3 colormap(float t) {
+    t = clamp(t, 0.0, 1.0);
+    
+    // Reconstruct actual precipitation value (mm)
+    float precip = t * 600.0;
+    
+    // Fixed mm thresholds matching the legend exactly
+    if (precip > 500.0) {
+      return vec3(0.0, 0.275, 0.047);     // #00460C  >500mm
+    } else if (precip > 400.0) {
+      return vec3(0.212, 0.569, 0.208);   // #369135  400-500mm
+    } else if (precip > 300.0) {
+      return vec3(0.541, 0.835, 0.545);   // #8AD58B  300-400mm
+    } else if (precip > 200.0) {
+      return vec3(0.878, 0.992, 0.408);   // #E0FD68  200-300mm
+    } else if (precip > 150.0) {
+      return vec3(0.922, 0.882, 0.0);     // #EBE100  150-200mm
+    } else if (precip > 100.0) {
+      return vec3(0.937, 0.655, 0.0);     // #EFA700  100-150mm
+    } else if (precip > 50.0) {
+      return vec3(0.863, 0.384, 0.0);     // #DC6200  50-100mm
+    } else if (precip > 20.0) {
+      return vec3(0.557, 0.157, 0.0);     // #8E2800  20-50mm
+    } else {
+      return vec3(0.204, 0.039, 0.0);     // #340A00  0-20mm
+    }
+  }
+  
+  void main() {
+    // Simple texture lookup with linear filtering
+    vec4 texel = texture2D(u_data, v_texCoord);
+    
+    float value = texel.r;  // Value is in R channel (0-1 range, was 0-255 stored)
+    float alpha = texel.a;  // Alpha indicates validity
+    
+    // Discard invalid pixels
+    if (alpha < 0.5) {
+      discard;
+    }
+    
+    // Apply colormap directly - value is already normalized 0-1
+    vec3 color = colormap(value);
+    
+    gl_FragColor = vec4(color, u_opacity);
+  }
+`;
+
+function createShader(gl, type, source) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+function createProgram(gl, vertexShader, fragmentShader) {
+  const program = gl.createProgram();
+  gl.attachShader(program, vertexShader);
+  gl.attachShader(program, fragmentShader);
+  gl.linkProgram(program);
+  
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error('Program link error:', gl.getProgramInfoLog(program));
+    gl.deleteProgram(program);
+    return null;
+  }
+  return program;
+}
+
+export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100, opacity = 0.8) {
+  const { lat, lon, values } = data;
+  
+  const gl = canvas.getContext('webgl', { 
+    alpha: true, 
+    premultipliedAlpha: false,
+    antialias: true 
+  });
+  
+  if (!gl) {
+    console.error('WebGL not supported');
+    return null;
+  }
+  
+  // Create shaders and program
+  const vertexShader = createShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
+  const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
+  const program = createProgram(gl, vertexShader, fragmentShader);
+  
+  if (!program) return null;
+  
+  gl.useProgram(program);
+  
+  const positions = new Float32Array([
+    -1, -1,  1, -1,  -1, 1,
+    -1,  1,  1, -1,   1, 1
+  ]);
+  
+  const positionBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+  
+  const positionLoc = gl.getAttribLocation(program, 'a_position');
+  gl.enableVertexAttribArray(positionLoc);
+  gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+  
+  const texCoords = new Float32Array([
+    0, 1,  1, 1,  0, 0,
+    0, 0,  1, 1,  1, 0
+  ]);
+  
+  const texCoordBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, texCoordBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
+  
+  const texCoordLoc = gl.getAttribLocation(program, 'a_texCoord');
+  gl.enableVertexAttribArray(texCoordLoc);
+  gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);
+  
+  const width = lon.length;
+  const height = lat.length;
+  const latAscending = lat[0] < lat[lat.length - 1];
+  
+  let minFound = Infinity;
+  let maxFound = -Infinity;
+  let validCount = 0;
+  const allValidValues = [];
+  
+  for (let i = 0; i < height; i++) {
+    for (let j = 0; j < width; j++) {
+      const srcY = latAscending ? (height - 1 - i) : i;
+      const row = values[srcY];
+      const value = (row && row[j] != null) ? row[j] : -999;
+      
+      if (value !== -999 && value >= 0) {
+        validCount++;
+        allValidValues.push(value);
+        if (value < minFound) minFound = value;
+        if (value > maxFound) maxFound = value;
+      }
+    }
+  }
+  
+  allValidValues.sort((a, b) => a - b);
+  const p10 = allValidValues[Math.floor(allValidValues.length * 0.1)] || 0;
+  const p50 = allValidValues[Math.floor(allValidValues.length * 0.5)] || 0;
+  const p90 = allValidValues[Math.floor(allValidValues.length * 0.9)] || 0;
+  const p99 = allValidValues[Math.floor(allValidValues.length * 0.99)] || maxFound;
+  
+  console.log('WebGL data analysis:', { 
+    width, height, validCount, 
+    dataMin: minFound, dataMax: maxFound, 
+    percentiles: { p10, p50, p90, p99 },
+    scaleMin: minVal, scaleMax: maxVal 
+  });
+  
+  // Fixed scale: 0-600mm mapped linearly to 0-255
+  // This ensures colors match the legend thresholds exactly
+  const FIXED_MAX_PRECIP = 600.0;
+  
+  // Pack data into RGBA texture using fixed linear scale
+  const textureData = new Uint8Array(width * height * 4);
+  let sampleValues = [];
+  let colorDistribution = { low: 0, mid: 0, high: 0 }; // Track color distribution
+  
+  for (let i = 0; i < height; i++) {
+    for (let j = 0; j < width; j++) {
+      const srcY = latAscending ? (height - 1 - i) : i;
+      const row2 = values[srcY];
+      const value = (row2 && row2[j] != null) ? row2[j] : -999;
+      const texIdx = (i * width + j) * 4;
+      
+      if (value !== -999 && value >= 0) {
+        // Linear normalization to fixed 0-600mm scale (no gamma)
+        const normalized01 = Math.min(1, value / FIXED_MAX_PRECIP);
+        const normalizedValue = Math.round(normalized01 * 255);
+        
+        textureData[texIdx] = normalizedValue;     // R: normalized value (0-255)
+        textureData[texIdx + 1] = 0;               // G: unused
+        textureData[texIdx + 2] = 0;               // B: unused
+        textureData[texIdx + 3] = 255;             // A: valid
+        
+        // Track distribution
+        if (normalizedValue < 85) colorDistribution.low++;
+        else if (normalizedValue < 170) colorDistribution.mid++;
+        else colorDistribution.high++;
+        
+        // Collect sample values for debugging
+        if (sampleValues.length < 10 && value > 0) {
+          sampleValues.push({ value: value.toFixed(2), normalized: normalizedValue });
+        }
+      } else {
+        textureData[texIdx] = 0;
+        textureData[texIdx + 1] = 0;
+        textureData[texIdx + 2] = 0;
+        textureData[texIdx + 3] = 0;               // A: invalid (transparent)
+      }
+    }
+  }
+  
+  console.log('WebGL color distribution:', colorDistribution);
+  console.log('WebGL sample values (first 10 non-zero):', sampleValues);
+  
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, textureData);
+  
+  // Use linear filtering for smooth interpolation
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  
+  gl.uniform1i(gl.getUniformLocation(program, 'u_data'), 0);
+  gl.uniform2f(gl.getUniformLocation(program, 'u_dataSize'), width, height);
+  gl.uniform1f(gl.getUniformLocation(program, 'u_opacity'), opacity);
+  gl.uniform1f(gl.getUniformLocation(program, 'u_maxPrecip'), FIXED_MAX_PRECIP);
+  
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  
+  gl.deleteBuffer(positionBuffer);
+  gl.deleteBuffer(texCoordBuffer);
+  gl.deleteTexture(texture);
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragmentShader);
+  gl.deleteProgram(program);
+  
+  return canvas;
+}
+
+export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
+  const layerRef = useRef(null);
+
+  useEffect(() => {
+    if (!map || !data || !data.lat || !data.lon || !data.values || !data.bounds) {
+      return;
+    }
+
+    const L = require('leaflet');
+
+    if (layerRef.current) {
+      map.removeLayer(layerRef.current);
+      layerRef.current = null;
+    }
+
+    const { lat, lon, values, stats, bounds: dataBounds } = data;
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = lon.length * 4;
+    canvas.height = lat.length * 4;
+    
+    const startTime = performance.now();
+    
+    const minVal = (stats && stats.min != null) ? stats.min : 0;
+    const maxVal = (stats && stats.max != null) ? stats.max : 100;
+    renderPrecipitationWebGL(canvas, data, minVal, maxVal, opacity);
+    
+    console.log(`WebGL render time: ${(performance.now() - startTime).toFixed(2)}ms`);
+    
+    const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
+    const dataLatMax = Math.max(lat[0], lat[lat.length - 1]);
+    const dataLonMin = Math.min(lon[0], lon[lon.length - 1]);
+    const dataLonMax = Math.max(lon[0], lon[lon.length - 1]);
+    
+    const latStep = (dataLatMax - dataLatMin) / (lat.length - 1);
+    const lonStep = (dataLonMax - dataLonMin) / (lon.length - 1);
+    
+    // Trim 1 degree from each edge (edge data is not accurate)
+    const EDGE_TRIM = 1;
+    
+    const overlayBounds = {
+      minLat: dataLatMin - latStep / 2 + EDGE_TRIM,
+      maxLat: dataLatMax + latStep / 2 - EDGE_TRIM,
+      minLon: dataLonMin - lonStep / 2 + EDGE_TRIM,
+      maxLon: dataLonMax + lonStep / 2 - EDGE_TRIM
+    };
+
+    const bounds = L.latLngBounds(
+      [overlayBounds.minLat, overlayBounds.minLon],
+      [overlayBounds.maxLat, overlayBounds.maxLon]
+    );
+
+    const imageUrl = canvas.toDataURL('image/png');
+    const imageOverlay = L.imageOverlay(imageUrl, bounds, {
+      opacity: 1, // Opacity is already applied in WebGL
+      interactive: false
+    });
+
+    imageOverlay.addTo(map);
+    layerRef.current = imageOverlay;
+
+    return () => {
+      if (layerRef.current) {
+        map.removeLayer(layerRef.current);
+        layerRef.current = null;
+      }
+    };
+  }, [map, data, opacity]);
+
+  return null;
+}
