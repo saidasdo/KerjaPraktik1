@@ -70,7 +70,6 @@ const FRAGMENT_SHADER = `
   }
 `;
 
-// Create shader
 function createShader(gl, type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -84,7 +83,6 @@ function createShader(gl, type, source) {
   return shader;
 }
 
-// Create program
 function createProgram(gl, vertexShader, fragmentShader) {
   const program = gl.createProgram();
   gl.attachShader(program, vertexShader);
@@ -99,7 +97,6 @@ function createProgram(gl, vertexShader, fragmentShader) {
   return program;
 }
 
-// Render precipitation data using WebGL
 export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100, opacity = 0.8) {
   const { lat, lon, values } = data;
   
@@ -123,7 +120,6 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   
   gl.useProgram(program);
   
-  // Set up vertex positions (full screen quad)
   const positions = new Float32Array([
     -1, -1,  1, -1,  -1, 1,
     -1,  1,  1, -1,   1, 1
@@ -137,7 +133,6 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   gl.enableVertexAttribArray(positionLoc);
   gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
   
-  // Set up texture coordinates
   const texCoords = new Float32Array([
     0, 1,  1, 1,  0, 0,
     0, 0,  1, 1,  1, 0
@@ -151,12 +146,10 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   gl.enableVertexAttribArray(texCoordLoc);
   gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);
   
-  // Create data texture
   const width = lon.length;
   const height = lat.length;
   const latAscending = lat[0] < lat[lat.length - 1];
   
-  // First pass: analyze data distribution
   let minFound = Infinity;
   let maxFound = -Infinity;
   let validCount = 0;
@@ -177,7 +170,6 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
     }
   }
   
-  // Sort to find percentiles for better color distribution
   allValidValues.sort((a, b) => a - b);
   const p10 = allValidValues[Math.floor(allValidValues.length * 0.1)] || 0;
   const p50 = allValidValues[Math.floor(allValidValues.length * 0.5)] || 0;
@@ -248,13 +240,11 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   
-  // Set uniforms
   gl.uniform1i(gl.getUniformLocation(program, 'u_data'), 0);
   gl.uniform2f(gl.getUniformLocation(program, 'u_dataSize'), width, height);
   gl.uniform1f(gl.getUniformLocation(program, 'u_opacity'), opacity);
   gl.uniform1f(gl.getUniformLocation(program, 'u_maxPrecip'), FIXED_MAX_PRECIP);
   
-  // Clear and draw
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.clearColor(0, 0, 0, 0);
   gl.clear(gl.COLOR_BUFFER_BIT);
@@ -263,7 +253,6 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   
   gl.drawArrays(gl.TRIANGLES, 0, 6);
   
-  // Cleanup
   gl.deleteBuffer(positionBuffer);
   gl.deleteBuffer(texCoordBuffer);
   gl.deleteTexture(texture);
@@ -284,7 +273,6 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
 
     const L = require('leaflet');
 
-    // Remove old layer if exists
     if (layerRef.current) {
       map.removeLayer(layerRef.current);
       layerRef.current = null;
@@ -292,22 +280,18 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
 
     const { lat, lon, values, stats, bounds: dataBounds } = data;
     
-    // Create canvas for WebGL rendering
     const canvas = document.createElement('canvas');
-    // Higher resolution for quality
     canvas.width = lon.length * 4;
     canvas.height = lat.length * 4;
     
     const startTime = performance.now();
     
-    // Render using WebGL
     const minVal = (stats && stats.min != null) ? stats.min : 0;
     const maxVal = (stats && stats.max != null) ? stats.max : 100;
     renderPrecipitationWebGL(canvas, data, minVal, maxVal, opacity);
     
     console.log(`WebGL render time: ${(performance.now() - startTime).toFixed(2)}ms`);
     
-    // Calculate pixel-centered bounds
     const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
     const dataLatMax = Math.max(lat[0], lat[lat.length - 1]);
     const dataLonMin = Math.min(lon[0], lon[lon.length - 1]);
@@ -326,7 +310,6 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
       maxLon: dataLonMax + lonStep / 2 - EDGE_TRIM
     };
 
-    // Create Leaflet image overlay
     const bounds = L.latLngBounds(
       [overlayBounds.minLat, overlayBounds.minLon],
       [overlayBounds.maxLat, overlayBounds.maxLon]

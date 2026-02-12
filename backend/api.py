@@ -48,20 +48,16 @@ def get_available_periods(force_refresh=False):
     
     current_time = time_module.time()
     
-    # Return cached if still valid and not forcing refresh
     if not force_refresh and _available_periods_cache and (current_time - _available_periods_cache_time) < PERIODS_CACHE_TTL:
         return _available_periods_cache
     
     print("🔍 Checking for new periods from data server...")
     
-    # Start with known periods
     available = KNOWN_PERIODS.copy()
     
-    # Parse first dynamic period
     year = int(FIRST_DYNAMIC_PERIOD[:4])
     month = int(FIRST_DYNAMIC_PERIOD[4:6])
     
-    # Check for new periods until we hit one that doesn't exist
     consecutive_failures = 0
     max_failures = 1  # Stop after first failure (no gaps expected)
     
@@ -70,7 +66,6 @@ def get_available_periods(force_refresh=False):
         url = BASE_URL_TEMPLATE.format(period=period)
         
         try:
-            # Try to open dataset - if it works, the period is available
             ds = xr.open_dataset(url, engine="netcdf4")
             ds.close()
             available.append(period)
@@ -81,7 +76,6 @@ def get_available_periods(force_refresh=False):
             print(f"  ❌ {period} not available - stopping search")
             break
         
-        # Next month
         month += 1
         if month > 12:
             month = 1
@@ -110,7 +104,6 @@ def get_dataset(period):
     print(f"📂 Opening new dataset connection for {period}...")
     ds = xr.open_dataset(url, engine="netcdf4")
     
-    # Debug: print available variables
     print(f"📋 Available variables in {period}: {list(ds.data_vars)}")
     
     _dataset_cache[period] = ds
@@ -122,7 +115,6 @@ def get_land_mask(subsample=1):
     """
     global _land_mask_cache
     
-    # Check if we have this subsample cached
     if subsample in _land_mask_cache:
         return _land_mask_cache[subsample]
     
@@ -131,10 +123,8 @@ def get_land_mask(subsample=1):
         url = BASE_URL_TEMPLATE.format(period=REFERENCE_PERIOD)
         ds = xr.open_dataset(url, engine="netcdf4")
         
-        # Get first time step from reference data
         pr_data = ds['pr'].isel(time=0)
         
-        # Subsample to match
         pr_subsampled = pr_data.isel(lat=slice(None, None, subsample), 
                                       lon=slice(None, None, subsample))
         
@@ -145,7 +135,6 @@ def get_land_mask(subsample=1):
         
         ds.close()
         
-        # Cache this subsample's mask
         _land_mask_cache[subsample] = land_mask
         print(f"✅ Land mask cached for subsample={subsample}: {np.sum(land_mask)} land pixels out of {land_mask.size}")
         
@@ -166,12 +155,10 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
     t_start = time_module.time()
     timings = {}
     
-    # 1. Get cached dataset (HUGE speedup - reuses connection!)
     t1 = time_module.time()
-    ds = get_dataset(period)  # ← Uses cached connection instead of opening new one
+    ds = get_dataset(period)
     timings['open_dataset'] = (time_module.time() - t1) * 1000
     
-    # 2. Get bounds from full dataset
     t2 = time_module.time()
     full_lats = ds['lat'].values
     full_lons = ds['lon'].values
@@ -181,16 +168,13 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
     )
     timings['get_bounds'] = (time_module.time() - t2) * 1000
     
-    # 3. Get data for specific DAY (average all 4 time steps)
     t3 = time_module.time()
     
-    # Check if 'pr' variable exists, if not list available variables
     if 'pr' not in ds.data_vars:
         available = list(ds.data_vars)
         print(f"⚠️ WARNING: 'pr' not found! Available variables: {available}")
         raise ValueError(f"Variable 'pr' not found. Available: {available}")
     
-    # Calculate raw time indices for this day
     total_raw_times = len(ds.time)
     total_days = total_raw_times // TIME_STEPS_PER_DAY
     
@@ -199,7 +183,6 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
     
     print(f"📊 Reading 'pr' for day {day_index}: time indices {start_time_idx} to {end_time_idx-1}")
     
-    # Average all time steps for this day, tracking valid data mask
     daily_sum = None
     valid_count = None  # Track how many valid readings per pixel
     count = 0
@@ -213,7 +196,6 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
         raw_values = pr_subsampled.values
         
         # SRF dataset uses POSITIVE fill value 9.96921E36
-        # Create mask for VALID data (not fill values)
         valid_mask = (raw_values > -1e30) & (raw_values < 1e30) & (raw_values >= 0)
         
         # SRF precipitation is in kg/m²/s, convert to mm/day
@@ -241,15 +223,12 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
     
     timings['select_data'] = (time_module.time() - t3) * 1000
     
-    # 4. Process values (skip - already done above)
     t4 = time_module.time()
     timings['to_numpy'] = (time_module.time() - t4) * 1000
     
-    # 5. Process values (skip - already done above)
     t5 = time_module.time()
     timings['nan_to_num'] = (time_module.time() - t5) * 1000
     
-    # 6. Apply land mask (only if requested)
     t6 = time_module.time()
     if apply_mask:
         land_mask = get_land_mask(subsample)
@@ -258,7 +237,6 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
             print(f"🗺️ Applied ocean mask")
     timings['land_mask'] = (time_module.time() - t6) * 1000
     
-    # 7. Get coordinates
     t7 = time_module.time()
     if len(lats) > 1:
         lat_min, lat_max = float(lats[0]), float(lats[-1])
@@ -269,7 +247,6 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
         lons = np.linspace(lon_min, lon_max, len(lons)).astype(np.float32)
     timings['coords'] = (time_module.time() - t7) * 1000
     
-    # 8. Calculate stats
     t8 = time_module.time()
     valid_values = values[values != -999]
     stats = (
@@ -281,7 +258,6 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
     )
     timings['stats'] = (time_module.time() - t8) * 1000
     
-    # Log data quality info
     if len(valid_values) > 0:
         actual_min = float(np.min(valid_values))
         actual_max = float(np.max(valid_values))
@@ -294,7 +270,6 @@ def get_cached_precip_data(period, day_index, subsample, apply_mask=False):
     
     timings['total'] = (time_module.time() - t_start) * 1000
     
-    # Print detailed timing breakdown
     print(f"\n⏱️ TIMING for {period}/day{day_index} (subsample={subsample}):")
     print(f"  📂 open_dataset:  {timings['open_dataset']:>7.0f}ms")
     print(f"  📍 get_bounds:    {timings['get_bounds']:>7.0f}ms")
@@ -377,21 +352,17 @@ def get_periods():
 @app.route('/api/precipitation', methods=['GET'])
 def get_precipitation():
     try:
-        # Get parameters
         period = request.args.get('period', '202601')
         time_index = int(request.args.get('time', 0))
         subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
-        # Validate period
         available_periods = get_available_periods()
         if period not in available_periods:
             return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
-        # Build URL
         url = BASE_URL_TEMPLATE.format(period=period)
         
-        # Open dataset
         ds = xr.open_dataset(url, engine="netcdf4")
         
         # Get ACTUAL bounds from FULL dataset (before subsampling)
@@ -404,7 +375,6 @@ def get_precipitation():
             'maxLon': float(np.max(full_lons))
         }
         
-        # Get data for specific time - ENSURE we use 'pr' (precipitation)
         if 'pr' not in ds.data_vars:
             available = list(ds.data_vars)
             return jsonify({'error': f"Variable 'pr' not found. Available: {available}"}), 500
@@ -413,22 +383,18 @@ def get_precipitation():
         print(f"📊 Reading 'pr' (precipitation) variable")
         
         # SRF dataset uses POSITIVE fill value 9.96921E36, old dataset used negative -9.0E33
-        # Mask both types of fill values and negative values
         pr_data = pr_data.where((pr_data > -1e30) & (pr_data < 1e30) & (pr_data >= 0))
         
         # SRF precipitation is in kg/m²/s, need to convert to mm/day
         # 1 kg/m²/s = 86400 mm/day
         pr_data = pr_data * 86400
         
-        # Subsample to reduce data size (every Nth point)
         pr_subsampled = pr_data.isel(lat=slice(None, None, subsample), 
                                       lon=slice(None, None, subsample))
         
-        # Convert to numpy and handle NaN
         values = pr_subsampled.values
         values = np.nan_to_num(values, nan=-999)  # Replace NaN with flag value
         
-        # Apply land mask only if requested
         if apply_mask:
             land_mask = get_land_mask(subsample)
             if land_mask is not None and land_mask.shape == values.shape:
@@ -436,12 +402,10 @@ def get_precipitation():
                 values = np.where(land_mask, values, -999)
                 print(f"Applied land mask to period {period}")
         
-        # Get coordinates - ensure we get actual coordinate arrays
         lats = pr_subsampled.lat.values
         lons = pr_subsampled.lon.values
         
-        # Ensure coordinates are evenly spaced if they should be
-        # For linear mapping, reconstruct the grid to ensure consistency
+        # Ensure coordinates are evenly spaced for linear mapping consistency
         if len(lats) > 1:
             lat_min, lat_max = float(lats[0]), float(lats[-1])
             lats = np.linspace(lat_min, lat_max, len(lats))
@@ -453,10 +417,8 @@ def get_precipitation():
         lats = lats.tolist()
         lons = lons.tolist()
         
-        # Calculate statistics for color scale
         valid_values = values[values != -999]
         
-        # Debug info
         print(f"Period: {period}")
         print(f"Data shape: {values.shape}")
         print(f"Lat range: {min(lats):.2f} to {max(lats):.2f}, count: {len(lats)}")
@@ -500,18 +462,15 @@ def get_precipitation_binary():
         request_start = time_module.time()
         timings = {}
         
-        # Get parameters
         period = request.args.get('period', '202601')
         time_index = int(request.args.get('time', 0))
         subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
-        # Validate period
         available_periods = get_available_periods()
         if period not in available_periods:
             return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
-        # Use cached data (HUGE speedup for repeated requests)
         t1 = time_module.time()
         cached = get_cached_precip_data(period, time_index, subsample, apply_mask)
         timings['cache_lookup'] = (time_module.time() - t1) * 1000
@@ -523,24 +482,21 @@ def get_precipitation_binary():
         stats = cached['stats']
         total_days = cached['total_days']
         
-        # Build binary response
         t2 = time_module.time()
         lat_count = len(lats)
         lon_count = len(lons)
         
-        # Pack header (13 values) - now using total_days instead of total_times
+        # Header: 4 ints + 9 floats, using total_days instead of total_times
         header = struct.pack('<4i9f',
             lat_count, lon_count, time_index, total_days,
             bounds[0], bounds[1], bounds[2], bounds[3],  # minLat, maxLat, minLon, maxLon
             stats[0], stats[1], stats[2], stats[3], stats[4]  # min, max, mean, actualMin, actualMax
         )
         
-        # Pack arrays as bytes
         lat_bytes = lats.tobytes()
         lon_bytes = lons.tobytes()
         values_bytes = values.tobytes()
         
-        # Combine all
         binary_data = header + lat_bytes + lon_bytes + values_bytes
         timings['binary_pack'] = (time_module.time() - t2) * 1000
         
@@ -560,18 +516,15 @@ def get_times():
     try:
         period = request.args.get('period', '202601')
         
-        # Validate period
         available_periods = get_available_periods()
         if period not in available_periods:
             return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
-        # Build URL
         url = BASE_URL_TEMPLATE.format(period=period)
         
         ds = xr.open_dataset(url, engine="netcdf4")
         raw_times = ds.time.values
         
-        # Group by date to get unique days
         unique_dates = []
         seen_dates = set()
         for t in raw_times:
@@ -602,12 +555,10 @@ def prefetch_period():
         subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
-        # Validate period
         available_periods = get_available_periods()
         if period not in available_periods:
             return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
-        # Get dataset to find total DAYS (not raw time steps)
         ds = get_dataset(period)
         total_raw_times = len(ds.time)
         total_days = total_raw_times // TIME_STEPS_PER_DAY
@@ -663,10 +614,8 @@ def clear_cache():
     """Clear all caches (useful for debugging or freeing memory)"""
     global _dataset_cache, _land_mask_cache
     
-    # Clear LRU cache
     get_cached_precip_data.cache_clear()
     
-    # Close and clear dataset connections
     for period, ds in _dataset_cache.items():
         try:
             ds.close()
@@ -674,7 +623,6 @@ def clear_cache():
             pass
     _dataset_cache = {}
     
-    # Clear land mask cache
     _land_mask_cache = {}
     
     print("🗑️ All caches cleared")
@@ -691,25 +639,21 @@ def get_aggregated_precipitation_binary():
     try:
         request_start = time_module.time()
         
-        # Get parameters
         period = request.args.get('period', '202601')
         start_day = int(request.args.get('start_time', 0))
         end_day = int(request.args.get('end_time', 0))
         subsample = 1  # Fixed subsample rate
         apply_mask = request.args.get('masked', 'false').lower() == 'true'  # Default: no mask
         
-        # Validate period
         available_periods = get_available_periods()
         if period not in available_periods:
             return jsonify({'error': f'Invalid period. Available: {", ".join(available_periods)}'}), 400
         
-        # Ensure end_day >= start_day
         if end_day < start_day:
             end_day = start_day
         
         print(f"📊 Aggregating {period}: days {start_day} to {end_day}...")
         
-        # Fetch all required DAYS and aggregate
         aggregated_values = None
         count = 0
         
@@ -750,16 +694,13 @@ def get_aggregated_precipitation_binary():
             # TEMP: Comment out for accumulation test (uncomment for average)
             aggregated_values = aggregated_values #/ valid_counts
         
-        # Replace NaN back to -999
         aggregated_values = np.nan_to_num(aggregated_values, nan=-999).astype(np.float32)
         
-        # Apply land mask only if requested
         if apply_mask:
             land_mask = get_land_mask(subsample)
             if land_mask is not None and land_mask.shape == aggregated_values.shape:
                 aggregated_values = np.where(land_mask, aggregated_values, -999).astype(np.float32)
         
-        # Calculate stats for aggregated data
         valid_values = aggregated_values[aggregated_values != -999]
         stats = (
             0.0,  # min (fixed scale)
@@ -769,23 +710,19 @@ def get_aggregated_precipitation_binary():
             float(np.max(valid_values)) if len(valid_values) > 0 else 0.0
         )
         
-        # Build binary response
         lat_count = len(lats)
         lon_count = len(lons)
         
-        # Pack header (13 values)
         header = struct.pack('<4i9f',
             lat_count, lon_count, start_day, total_days,
             bounds[0], bounds[1], bounds[2], bounds[3],  # minLat, maxLat, minLon, maxLon
             stats[0], stats[1], stats[2], stats[3], stats[4]  # min, max, mean, actualMin, actualMax
         )
         
-        # Pack arrays as bytes
         lat_bytes = lats.tobytes()
         lon_bytes = lons.tobytes()
         values_bytes = aggregated_values.tobytes()
         
-        # Combine all
         binary_data = header + lat_bytes + lon_bytes + values_bytes
         
         elapsed = time_module.time() - request_start
@@ -818,27 +755,21 @@ def get_timeseries():
         if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
-        # Get dataset to determine total days and find grid indices
         ds = get_dataset(period)
         
-        # Check if 'pr' variable exists
         if 'pr' not in ds.data_vars:
             available = list(ds.data_vars)
             return jsonify({'error': f"Variable 'pr' not found. Available: {available}"}), 500
         
-        # Get lat/lon arrays
         lats = ds['lat'].values
         lons = ds['lon'].values
         
-        # Find nearest grid point (full resolution)
         lat_idx = np.argmin(np.abs(lats - lat))
         lon_idx = np.argmin(np.abs(lons - lon))
         
-        # Get actual grid coordinates
         actual_lat = float(lats[lat_idx])
         actual_lon = float(lons[lon_idx])
         
-        # Calculate total days
         total_raw_times = len(ds.time)
         total_days = total_raw_times // TIME_STEPS_PER_DAY
         
@@ -849,11 +780,9 @@ def get_timeseries():
         # If last day is cached, the entire period is cached (prefetch is sequential)
         use_cache = False
         
-        # Get lat/lon indices for cache lookup (same as full resolution since subsample=1)
         lat_idx_cache = lat_idx
         lon_idx_cache = lon_idx
         
-        # Check if last day is cached by timing its retrieval
         try:
             last_day_idx = total_days - 1
             t_check = time_module.time()
@@ -870,19 +799,16 @@ def get_timeseries():
             print(f"⚠️ Cache check failed: {e} - using direct query")
             use_cache = False
         
-        # Use cached data if available
         if use_cache:
             try:
                 t_cache_start = time_module.time()
                 daily_series = []
                 
-                # Get time values for date labels
                 times = ds['time'].values
                 
                 for day_idx in range(total_days):
                     cached = get_cached_precip_data(period, day_idx, subsample, False)
                     
-                    # Extract value at the grid point from cached data
                     values_grid = cached['values']
                     precip_val = float(values_grid[lat_idx_cache, lon_idx_cache])
                     
@@ -890,7 +816,6 @@ def get_timeseries():
                     if precip_val < -900:
                         precip_val = 0
                     
-                    # Get date from time array
                     time_idx = day_idx * TIME_STEPS_PER_DAY
                     time_str = str(times[time_idx])[:10]
                     
@@ -913,13 +838,10 @@ def get_timeseries():
         if not use_cache:
             t_direct_start = time_module.time()
             
-            # Extract time series for this grid point
             pr_data = ds['pr'].isel(lat=lat_idx, lon=lon_idx)
             
-            # Get time values
             times = ds['time'].values
             
-            # Build raw time series and group by date (to handle same-day averaging)
             date_values = {}  # date_str -> list of precipitation values
             date_indices = {}  # date_str -> list of time indices
             
@@ -963,7 +885,6 @@ def get_timeseries():
             direct_time = time_module.time() - t_direct_start
             print(f"📊 Time series from DIRECT query: {len(daily_series)} days in {direct_time*1000:.0f}ms")
         
-        # Aggregate based on mode
         if mode == 'day':
             time_series = daily_series
         elif mode == '10day':
@@ -1026,7 +947,6 @@ def get_timeseries():
         else:
             time_series = daily_series
         
-        # Calculate basic statistics
         valid_values = [item['precipitation'] for item in time_series]
         if valid_values:
             stats = {
@@ -1083,17 +1003,14 @@ def download_timeseries_csv():
         if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
-        # Get dataset
         ds = get_dataset(period)
         
         if 'pr' not in ds.data_vars:
             return jsonify({'error': "Variable 'pr' not found"}), 500
         
-        # Get lat/lon arrays
         lats = ds['lat'].values
         lons = ds['lon'].values
         
-        # Find nearest grid point
         lat_idx = np.argmin(np.abs(lats - lat))
         lon_idx = np.argmin(np.abs(lons - lon))
         
@@ -1106,7 +1023,6 @@ def download_timeseries_csv():
         times = ds['time'].values
         subsample = 1
         
-        # Build daily series from cache
         daily_series = []
         for day_idx in range(total_days):
             cached = get_cached_precip_data(period, day_idx, subsample, False)
@@ -1124,18 +1040,20 @@ def download_timeseries_csv():
                 'precipitation': round(precip_val, 2)
             })
         
-        # Aggregate based on mode
         if mode == '10day':
             time_series = []
             for i in range(0, len(daily_series), 10):
                 chunk = daily_series[i:i+10]
                 if chunk:
-                    avg_precip = np.mean([d['precipitation'] for d in chunk])
+                    precip_values = [d['precipitation'] for d in chunk]
+                    sum_precip = np.sum(precip_values)
+                    avg_precip = np.mean(precip_values)
                     time_series.append({
                         'start_date': chunk[0]['date'],
                         'end_date': chunk[-1]['date'],
                         'days': len(chunk),
-                        'precipitation': round(avg_precip, 2)
+                        'precipitation_sum': round(float(sum_precip), 2),
+                        'precipitation_avg': round(float(avg_precip), 2)
                     })
         elif mode == 'monthly':
             month_data = {}
@@ -1148,24 +1066,26 @@ def download_timeseries_csv():
             time_series = []
             for month_key in sorted(month_data.keys()):
                 month_days = month_data[month_key]
-                avg_precip = np.mean([d['precipitation'] for d in month_days])
+                precip_values = [d['precipitation'] for d in month_days]
+                sum_precip = np.sum(precip_values)
+                avg_precip = np.mean(precip_values)
                 time_series.append({
                     'month': month_key,
                     'days': len(month_days),
-                    'precipitation': round(avg_precip, 2)
+                    'precipitation_sum': round(float(sum_precip), 2),
+                    'precipitation_avg': round(float(avg_precip), 2)
                 })
         else:
             time_series = daily_series
         
-        # Create CSV
         output = StringIO()
         
         if mode == 'day':
             writer = csv.DictWriter(output, fieldnames=['date', 'precipitation'])
         elif mode == '10day':
-            writer = csv.DictWriter(output, fieldnames=['start_date', 'end_date', 'days', 'precipitation'])
+            writer = csv.DictWriter(output, fieldnames=['start_date', 'end_date', 'days', 'precipitation_sum', 'precipitation_avg'])
         else:
-            writer = csv.DictWriter(output, fieldnames=['month', 'days', 'precipitation'])
+            writer = csv.DictWriter(output, fieldnames=['month', 'days', 'precipitation_sum', 'precipitation_avg'])
         
         writer.writeheader()
         writer.writerows(time_series)
@@ -1211,7 +1131,6 @@ def download_region_timeseries_csv():
         if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
-        # Get the time series data (reuse existing logic)
         polygon = shape(geometry)
         prepared_polygon = prep(polygon)
         
@@ -1244,7 +1163,6 @@ def download_region_timeseries_csv():
         total_raw_times = len(times)
         total_days = total_raw_times // TIME_STEPS_PER_DAY
         
-        # Build daily series
         daily_series = []
         for day_idx in range(total_days):
             cached = get_cached_precip_data(period, day_idx, 1, False)
@@ -1264,7 +1182,6 @@ def download_region_timeseries_csv():
                 'precipitation': round(regional_avg, 2)
             })
         
-        # Aggregate based on mode
         if mode == '10day':
             time_series = []
             for i in range(0, len(daily_series), 10):
@@ -1303,7 +1220,6 @@ def download_region_timeseries_csv():
         else:
             time_series = daily_series
         
-        # Create CSV
         output = StringIO()
         
         if mode == 'day':
@@ -1318,7 +1234,6 @@ def download_region_timeseries_csv():
         
         csv_data = output.getvalue()
         
-        # Clean filename
         safe_zom_name = zom_name.replace(' ', '_').replace('(', '').replace(')', '').replace(',', '')
         filename = f"precipitation_{period}_{mode}_{safe_zom_name}.csv"
         
@@ -1347,7 +1262,6 @@ def get_zom_info():
         import json
         import os
         
-        # Path to ZOM GeoJSON file
         zom_path = os.path.join(os.path.dirname(__file__), '..', 'public', 'zom.geojson')
         
         if not os.path.exists(zom_path):
@@ -1356,7 +1270,6 @@ def get_zom_info():
         with open(zom_path, 'r') as f:
             zom_data = json.load(f)
         
-        # Extract summary info
         zones = []
         provinces = set()
         islands = set()
@@ -1406,7 +1319,6 @@ def get_region_timeseries():
     try:
         t_start = time_module.time()
         
-        # Get parameters
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No JSON data provided'}), 400
@@ -1426,21 +1338,18 @@ def get_region_timeseries():
         
         print(f"🗺️ Processing ZOM: {zom_name}")
         
-        # Create Shapely polygon from GeoJSON
         try:
             polygon = shape(geometry)
             prepared_polygon = prep(polygon)  # Faster point-in-polygon tests
         except Exception as e:
             return jsonify({'error': f'Invalid geometry: {str(e)}'}), 400
         
-        # Get dataset
         ds = get_dataset(period)
         
         if 'pr' not in ds.data_vars:
             available = list(ds.data_vars)
             return jsonify({'error': f"Variable 'pr' not found. Available: {available}"}), 500
         
-        # Get lat/lon arrays (full resolution for accuracy)
         lats = ds['lat'].values
         lons = ds['lon'].values
         
@@ -1451,14 +1360,11 @@ def get_region_timeseries():
             region_mask = _zom_mask_cache[cache_key]
             print(f"✅ Using cached mask for {zom_name}")
         else:
-            # Create mask for points inside the polygon
             print(f"🔍 Creating mask for {zom_name}...")
             t_mask_start = time_module.time()
             
-            # Create mesh grid of coordinates
             lon_grid, lat_grid = np.meshgrid(lons, lats)
             
-            # Flatten for point-in-polygon test
             points_lat = lat_grid.flatten()
             points_lon = lon_grid.flatten()
             
@@ -1475,26 +1381,21 @@ def get_region_timeseries():
                     if prepared_polygon.contains(Point(lon, lat)):
                         region_mask[i] = True
             
-            # Reshape to grid
             region_mask = region_mask.reshape(lat_grid.shape)
             
-            # Cache the mask
             _zom_mask_cache[cache_key] = region_mask
             
             mask_time = time_module.time() - t_mask_start
             print(f"✅ Mask created for {zom_name}: {np.sum(region_mask)} points in {mask_time:.1f}s")
         
-        # Count points in region
         num_points = np.sum(region_mask)
         if num_points == 0:
             return jsonify({'error': f'No data points found in ZOM {zom_name}'}), 400
         
-        # Get time values and calculate total days
         times = ds['time'].values
         total_raw_times = len(times)
         total_days = total_raw_times // TIME_STEPS_PER_DAY
         
-        # Check if data is cached (check last day)
         subsample = 1
         use_cache = False
         
@@ -1512,7 +1413,6 @@ def get_region_timeseries():
         except:
             print(f"⚠️ ZOM cache check failed: using DIRECT query")
         
-        # Build time series by averaging over region for each day
         if use_cache:
             print(f"📊 Calculating ZOM averages from CACHE for {total_days} days...")
             t_calc_start = time_module.time()
@@ -1531,7 +1431,6 @@ def get_region_timeseries():
                 else:
                     regional_avg = 0
                 
-                # Get date from time array
                 time_idx = day_idx * TIME_STEPS_PER_DAY
                 time_str = str(times[time_idx])[:10]
                 
@@ -1551,7 +1450,6 @@ def get_region_timeseries():
             date_values = {}  # date_str -> list of regional average values
             
             for i, time_val in enumerate(times):
-                # Get precipitation for this time step
                 pr_slice = ds['pr'].isel(time=i).values
                 
                 # Handle fill values
@@ -1564,7 +1462,6 @@ def get_region_timeseries():
                 else:
                     regional_avg = 0
                 
-                # Group by date
                 time_str = str(time_val)[:10]
                 if time_str not in date_values:
                     date_values[time_str] = []
@@ -1585,7 +1482,6 @@ def get_region_timeseries():
                     'num_samples': len(values)
                 })
         
-        # Aggregate based on mode
         if mode == 'day':
             time_series = daily_series
         elif mode == '10day':
@@ -1631,7 +1527,6 @@ def get_region_timeseries():
         else:
             time_series = daily_series
         
-        # Calculate statistics
         valid_values = [item['precipitation'] for item in time_series]
         if valid_values:
             stats = {
@@ -1687,23 +1582,19 @@ def get_region_precipitation():
         if period not in available_periods:
             return jsonify({'error': f'Period {period} not available'}), 400
         
-        # Create Shapely polygon
         polygon = shape(geometry)
         prepared_polygon = prep(polygon)
         
-        # Get cached precipitation data
         cached = get_cached_precip_data(period, day_index, 2, False)
         lats = cached['lats']
         lons = cached['lons']
         values = cached['values']
         
-        # Check cache for mask
         cache_key = f"{zom_name}_{len(lats)}_{len(lons)}_subsample"
         
         if cache_key in _zom_mask_cache:
             region_mask = _zom_mask_cache[cache_key]
         else:
-            # Create mask
             lon_grid, lat_grid = np.meshgrid(lons, lats)
             points_lat = lat_grid.flatten()
             points_lon = lon_grid.flatten()
@@ -1720,7 +1611,6 @@ def get_region_precipitation():
             region_mask = region_mask.reshape(lat_grid.shape)
             _zom_mask_cache[cache_key] = region_mask
         
-        # Calculate regional average
         valid_mask = (values != -999) & region_mask
         if np.sum(valid_mask) > 0:
             regional_avg = float(np.mean(values[valid_mask]))

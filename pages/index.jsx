@@ -43,7 +43,6 @@ const preloadTiles = async (bounds, zoom, onProgress) => {
     for (let y = minTileY; y <= maxTileY; y++) {
       const tileKey = `${zoom}/${x}/${y}`;
       
-      // Skip if already cached
       if (tileCache[tileKey]) {
         loadedCount++;
         if (onProgress) onProgress(loadedCount, totalTiles);
@@ -75,7 +74,6 @@ const preloadTiles = async (bounds, zoom, onProgress) => {
   return true;
 };
 
-// Get cached tile
 const getCachedTile = (x, y, zoom) => {
   const tileKey = `${zoom}/${x}/${y}`;
   return tileCache[tileKey] || null;
@@ -180,7 +178,6 @@ const filterTimesByDataRange = (times, dataRange) => {
   if (!times || times.length === 0) return [];
   
   if (dataRange === 'daily') {
-    // Return all times with their indices
     return times.map((time, idx) => ({
       label: formatTime(time),
       value: idx,
@@ -295,7 +292,6 @@ const parseBinaryPrecipData = (buffer) => {
   const view = new DataView(buffer);
   let offset = 0;
   
-  // Read header (4 int32 + 9 float32 = 52 bytes)
   const latCount = view.getInt32(offset, true); offset += 4;
   const lonCount = view.getInt32(offset, true); offset += 4;
   const timeIndex = view.getInt32(offset, true); offset += 4;
@@ -312,15 +308,12 @@ const parseBinaryPrecipData = (buffer) => {
   const actualMin = view.getFloat32(offset, true); offset += 4;
   const actualMax = view.getFloat32(offset, true); offset += 4;
   
-  // Read lat array
   const lat = new Float32Array(buffer, offset, latCount);
   offset += latCount * 4;
   
-  // Read lon array
   const lon = new Float32Array(buffer, offset, lonCount);
   offset += lonCount * 4;
   
-  // Read values as 2D array (convert from flat Float32Array)
   const flatValues = new Float32Array(buffer, offset, latCount * lonCount);
   const values = [];
   for (let i = 0; i < latCount; i++) {
@@ -402,7 +395,6 @@ export default function Home() {
   
   // Function to start/restart prefetch for current period
   const startPrefetch = (targetPeriod) => {
-    // Abort any ongoing prefetch
     if (prefetchAbortRef.current) {
       prefetchAbortRef.current.abort();
     }
@@ -467,7 +459,6 @@ export default function Home() {
   useEffect(() => {
     if (!period) return;
     
-    // Abort any ongoing prefetch
     if (prefetchAbortRef.current) {
       prefetchAbortRef.current.abort();
     }
@@ -478,13 +469,11 @@ export default function Home() {
         setAvailableTimes(data.times || []);
         setTimeIndex(0); // Reset time index when period changes
         setSelectedTimeOption(0); // Reset selected time option
-        // Set animation range to full period
         setAnimationFrom(0);
         setAnimationTo((data.times || []).length - 1);
       })
       .catch(err => console.error('Error fetching times:', err));
     
-    // Start prefetch for new period
     startPrefetch(period);
   }, [period]);
   
@@ -494,10 +483,8 @@ export default function Home() {
     setFilteredTimeOptions(filtered);
     setSelectedTimeOption(0);
     
-    // Update timeIndex to first index of new filtered options
     if (filtered.length > 0) {
       setTimeIndex(filtered[0].startIdx);
-      // Update animation range to match filtered options
       setAnimationFrom(0);
       setAnimationTo(filtered.length - 1);
     }
@@ -532,32 +519,26 @@ export default function Home() {
     canvas.height = height;
     const ctx = canvas.getContext('2d');
 
-    // White background
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, width, height);
 
-    // Calculate map area
     const mapWidth = width - padding.left - padding.right;
     const mapHeight = height - padding.top - padding.bottom;
     
-    // Geographic bounds
     const latRange = bounds.maxLat - bounds.minLat;
     const lonRange = bounds.maxLon - bounds.minLon;
 
-    // Convert lat/lon to canvas coordinates
     const geoToCanvas = (lt, ln) => {
       const x = padding.left + ((ln - bounds.minLon) / lonRange) * mapWidth;
       const y = padding.top + mapHeight - ((lt - bounds.minLat) / latRange) * mapHeight;
       return { x, y };
     };
 
-    // Clip all map content to the map area (white rectangle)
     ctx.save();
     ctx.beginPath();
     ctx.rect(padding.left, padding.top, mapWidth, mapHeight);
     ctx.clip();
 
-    // Draw tiles from cache (label-free basemap)
     const zoom = 6;
     const { minTileX, maxTileX, minTileY, maxTileY } = getTileCoordinates(bounds, zoom);
     
@@ -579,11 +560,9 @@ export default function Home() {
       }
     }
 
-    // Draw gridlines (BMKG style) - lines only, labels drawn later
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.lineWidth = 1.5;
 
-    // Latitude lines (every 5 degrees)
     for (let lt = Math.ceil(bounds.minLat / 5) * 5; lt <= bounds.maxLat; lt += 5) {
       const p1 = geoToCanvas(lt, bounds.minLon);
       const p2 = geoToCanvas(lt, bounds.maxLon);
@@ -593,7 +572,6 @@ export default function Home() {
       ctx.stroke();
     }
 
-    // Longitude lines (every 10 degrees)
     for (let ln = Math.ceil(bounds.minLon / 10) * 10; ln <= bounds.maxLon; ln += 10) {
       const p1 = geoToCanvas(bounds.minLat, ln);
       const p2 = geoToCanvas(bounds.maxLat, ln);
@@ -609,17 +587,14 @@ export default function Home() {
     dataCanvas.width = lon.length * resolutionMultiplier;
     dataCanvas.height = lat.length * resolutionMultiplier;
     
-    // Calculate the actual bounds from the data coordinates
     const dataLatMin = Math.min(lat[0], lat[lat.length - 1]);
     const dataLatMax = Math.max(lat[0], lat[lat.length - 1]);
     const dataLonMin = Math.min(lon[0], lon[lon.length - 1]);
     const dataLonMax = Math.max(lon[0], lon[lon.length - 1]);
     
-    // Calculate pixel size in geographic units
     const latStep = (dataLatMax - dataLatMin) / (lat.length - 1);
     const lonStep = (dataLonMax - dataLonMin) / (lon.length - 1);
     
-    // Extend bounds by half a pixel to properly center the data
     const dataBounds = {
       minLat: dataLatMin - latStep / 2,
       maxLat: dataLatMax + latStep / 2,
@@ -627,10 +602,8 @@ export default function Home() {
       maxLon: dataLonMax + lonStep / 2
     };
     
-    // Render using WebGL (much faster!)
     renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 1);
     
-    // Draw WebGL-rendered data onto main canvas using pixel-centered bounds
     const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);
     const mapBottomRight = geoToCanvas(dataBounds.minLat, dataBounds.maxLon);
     
@@ -643,9 +616,7 @@ export default function Home() {
     );
     ctx.imageSmoothingEnabled = true; // Re-enable for other drawings
 
-    // Draw province boundaries on static image (from Natural Earth via GitHub)
     try {
-      // Use Indonesia province boundaries from public GeoJSON
       const provResponse = await fetch('https://raw.githubusercontent.com/superpikar/indonesia-geojson/master/indonesia-province-simple.json');
       const provGeoJson = await provResponse.json();
       
@@ -653,13 +624,11 @@ export default function Home() {
       ctx.lineWidth = 4; // Thicker province borders
       ctx.globalAlpha = 0.85;
       
-      // Helper function to draw a polygon
       const drawPolygon = (coordinates) => {
         ctx.beginPath();
         coordinates.forEach((ring, ringIdx) => {
           ring.forEach((coord, idx) => {
             const [lng, latCoord] = coord;
-            // Skip if outside visible bounds
             if (lng < bounds.minLon - 1 || lng > bounds.maxLon + 1 || 
                 latCoord < bounds.minLat - 1 || latCoord > bounds.maxLat + 1) return;
             
@@ -674,7 +643,6 @@ export default function Home() {
         ctx.stroke();
       };
       
-      // Draw each feature
       provGeoJson.features.forEach(feature => {
         const geom = feature.geometry;
         if (geom.type === 'Polygon') {
@@ -689,14 +657,11 @@ export default function Home() {
       console.error('Error loading province borders for PNG:', error);
     }
 
-    // Restore context (end clipping)
     ctx.restore();
 
-    // Draw axis labels (outside clip region)
     ctx.fillStyle = '#000';
     ctx.font = 'bold 28px Arial';
 
-    // Latitude labels on left side
     for (let lt = Math.ceil(bounds.minLat / 5) * 5; lt <= bounds.maxLat; lt += 5) {
       const p1 = geoToCanvas(lt, bounds.minLon);
       ctx.textAlign = 'right';
@@ -705,7 +670,6 @@ export default function Home() {
       ctx.fillText(latLabel, padding.left - 10, p1.y);
     }
 
-    // Longitude labels at bottom
     for (let ln = Math.ceil(bounds.minLon / 10) * 10; ln <= bounds.maxLon; ln += 10) {
       const p1 = geoToCanvas(bounds.minLat, ln);
       ctx.textAlign = 'center';
@@ -714,7 +678,6 @@ export default function Home() {
       ctx.fillText(lonLabel, p1.x, padding.top + mapHeight + 10);
     }
 
-    // Draw border around map
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 3;
     ctx.strokeRect(padding.left, padding.top, mapWidth, mapHeight);
@@ -740,19 +703,16 @@ export default function Home() {
     
     const ticks = [20, 50, 100, 150, 200, 300, 400, 500];
     
-    // Draw solid color blocks horizontally
     const blockWidth = colorbarWidth / colorStops.length;
     colorStops.forEach((stop, idx) => {
       ctx.fillStyle = stop.color;
       ctx.fillRect(colorbarX + idx * blockWidth, colorbarY, blockWidth, colorbarHeight);
     });
     
-    // Draw border around colorbar
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1;
     ctx.strokeRect(colorbarX, colorbarY, colorbarWidth, colorbarHeight);
     
-    // Draw ticks and labels below colorbar
     ctx.fillStyle = '#000';
     ctx.font = 'bold 24px Arial';
     ctx.textAlign = 'center';
@@ -762,12 +722,10 @@ export default function Home() {
     const tickPositions = [1, 2, 3, 4, 5, 6, 7, 8]; // After each color block
     tickPositions.forEach((pos, idx) => {
       const x = colorbarX + pos * blockWidth;
-      // Draw tick mark
       ctx.beginPath();
       ctx.moveTo(x, colorbarY + colorbarHeight);
       ctx.lineTo(x, colorbarY + colorbarHeight + 5);
       ctx.stroke();
-      // Draw label
       ctx.fillText(ticks[idx].toString(), x, colorbarY + colorbarHeight + 8);
     });
 
@@ -785,8 +743,7 @@ export default function Home() {
     
     // Forecast = the time the user currently selected
     // Try to get from the selected time option label
-    let forecastLabel = `${initialMonth} ${periodYear}`; // fallback
-    const currentOption = filteredTimeOptions[selectedTimeOption];
+    let forecastLabel = `${initialMonth} ${periodYear}`; // fallback    const currentOption = filteredTimeOptions[selectedTimeOption];
     if (currentOption && currentOption.label) {
       forecastLabel = currentOption.label;
     } else if (dataRange === 'daily' && availableTimes[selectedTimeOption]) {
@@ -796,11 +753,9 @@ export default function Home() {
       forecastLabel = `${initialMonth} ${periodYear}`;
     }
     
-    // Main title
     ctx.font = 'bold 36px Arial';
     ctx.fillText('Monthly Precipitation (mm)', padding.left, 20);
     
-    // Forecast line
     ctx.font = '30px Arial';
     ctx.fillText(`Forecast: ${forecastLabel}`, padding.left, 62);
     
@@ -808,7 +763,6 @@ export default function Home() {
     ctx.font = 'italic 30px Arial';
     ctx.fillText(`Initial: ${initialMonth} ${periodYear}`, padding.left, 98);
     
-    // Resolution info at top-right
     ctx.font = '28px Arial';
     ctx.textAlign = 'right';
     ctx.fillText('20km InaRCMv0.5', width - padding.right, 25);
@@ -823,14 +777,11 @@ export default function Home() {
       const startTime = performance.now();
       let data;
       
-      // Get current selected option to determine time range
       const currentOption = filteredTimeOptions[selectedTimeOption];
       
       if (dataRange === 'daily' || !currentOption) {
-        // Daily view - fetch single time step
         data = await fetchBinaryPrecipData(period, timeIndex, 1);
       } else {
-        // 10-day or monthly view - fetch aggregated data
         data = await fetchAggregatedPrecipData(
           period, 
           currentOption.startIdx, 
@@ -862,11 +813,9 @@ export default function Home() {
       const currentOption = filteredTimeOptions[selectedTimeOption];
       const fetchKey = `${period}_${dataRange}_${selectedTimeOption}_${currentOption?.startIdx}_${currentOption?.endIdx}`;
       
-      // Skip if already fetching this exact data
       if (lastFetchRef.current === fetchKey) return;
       lastFetchRef.current = fetchKey;
       
-      // Add small delay to allow switch animation to complete
       const timer = setTimeout(() => {
         fetchPrecipData();
       }, 100);
@@ -894,7 +843,6 @@ export default function Home() {
     for (let i = animationFrom; i <= animationTo; i++) {
       const cacheKey = `${period}_${i}`;
       
-      // Skip if already cached
       if (dataCache[cacheKey]) {
         newCache[cacheKey] = dataCache[cacheKey];
         setCacheProgress(prev => ({ ...prev, loaded: prev.loaded + 1 }));

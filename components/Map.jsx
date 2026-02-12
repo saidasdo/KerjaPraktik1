@@ -13,7 +13,6 @@ import {
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 
-// Register Chart.js components
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -24,7 +23,6 @@ ChartJS.register(
   Legend
 );
 
-// Color legend component - responsive for mobile
 function ColorLegend({ stats }) {
   const [isMobile, setIsMobile] = useState(false);
   
@@ -47,7 +45,6 @@ function ColorLegend({ stats }) {
     { range: '0-20', color: '#340A00' }
   ];
   
-  // Mobile: horizontal legend below map
   if (isMobile) {
     return (
       <div style={{
@@ -81,7 +78,6 @@ function ColorLegend({ stats }) {
     );
   }
   
-  // Desktop: vertical legend on map
   return (
     <div style={{
       position: 'absolute',
@@ -129,24 +125,21 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   const coloredZomLayerRef = useRef(null);  // Colored ZOM polygons layer
   const [isMobile, setIsMobile] = useState(false);
   
-  // Box select mode state
   const boxStartRef = useRef(null);      // Start corner of box
   const boxRectRef = useRef(null);       // Leaflet rectangle for the box
   const boxMaskRef = useRef(null);       // Array of mask rectangles
   const isDrawingBoxRef = useRef(false); // Whether user is currently drawing
   
-  // Coordinate search state
   const [coordSearch, setCoordSearch] = useState({ lat: '', lon: '' });
   const [coordError, setCoordError] = useState('');
   
-  // Check for mobile viewport
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
     checkMobile();
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
-  // Convert dataRange to API mode
+
   const getApiMode = () => {
     if (dataRange === 'daily') return 'day';
     if (dataRange === '10day') return '10day';
@@ -168,7 +161,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     return '#340A00';
   };
 
-  // Calculate average precipitation for a polygon using grid points inside it
   const calculatePolygonAverage = (geometry) => {
     if (!precipData || !precipData.lat || !precipData.lon || !precipData.values) {
       return null;
@@ -222,7 +214,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       return false;
     };
     
-    // Collect valid values inside polygon
     let sum = 0;
     let count = 0;
     
@@ -249,7 +240,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     return count > 0 ? sum / count : null;
   };
 
-  // Function to get precipitation value at lat/lon
   const getPrecipitationAt = (lat, lon) => {
     if (!precipData || !precipData.lat || !precipData.lon || !precipData.values) {
       return null;
@@ -257,7 +247,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
 
     const { lat: lats, lon: lons, values } = precipData;
 
-    // Find nearest grid point
     let nearestLatIdx = 0;
     let nearestLonIdx = 0;
     let minLatDist = Math.abs(lats[0] - lat);
@@ -281,7 +270,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
 
     const value = values[nearestLatIdx]?.[nearestLonIdx];
     
-    // Return null if no valid data
     if (value === undefined || value === null || value === -999 || value < 0) {
       return null;
     }
@@ -289,7 +277,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     return value;
   };
 
-  // Function to refresh time series data for the current location
   const refreshTimeSeriesData = async () => {
     if (!sideWindow.data) return;
     
@@ -325,7 +312,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     }
   };
 
-  // Handle coordinate search - navigate to lat/lon and show time series
   const handleCoordSearch = async () => {
     const lat = parseFloat(coordSearch.lat);
     const lon = parseFloat(coordSearch.lon);
@@ -352,27 +338,21 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     
     if (!map) return;
     
-    // Remove old marker if exists
     if (markerRef.current) {
       map.removeLayer(markerRef.current);
     }
     
-    // Remove selected ZOM highlight if any
     if (selectedZomRef.current) {
       map.removeLayer(selectedZomRef.current);
       selectedZomRef.current = null;
     }
     
-    // Set loading state
     setSideWindow({ visible: true, data: null, loading: true });
     
-    // Pan map to location
     map.setView([lat, lon], 8);
     
-    // Get precipitation at location
     const precip = getPrecipitationAt(lat, lon);
     
-    // Fetch location name
     let locationName = 'Custom Location';
     let locationDetails = { city: '', province: '', country: '' };
     
@@ -396,7 +376,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       console.error('Error fetching location:', error);
     }
     
-    // Fetch time series
     let timeSeriesData = null;
     const mode = getApiMode();
     try {
@@ -410,11 +389,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       console.error('Error fetching time series:', error);
     }
     
-    // Add marker
     const marker = L.marker([lat, lon]).addTo(map);
     markerRef.current = marker;
     
-    // Update side window
     setSideWindow({
       visible: true,
       loading: false,
@@ -437,7 +414,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     });
   };
 
-  // Download time series as CSV
   const downloadCSV = async () => {
     if (!sideWindow.data) return;
     
@@ -662,12 +638,11 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     // This gives us VECTOR lines with fixed stroke width regardless of zoom
     const loadIndonesiaBorders = async () => {
       try {
-        // First, load GLOBAL country borders (thin lines, above overlay)
         try {
           const worldResponse = await fetch('https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson');
           const worldGeojson = await worldResponse.json();
           
-          // Filter out Indonesia from world borders (we'll draw it separately with thicker lines)
+          // Filter out Indonesia (drawn separately with thicker lines)
           const worldWithoutIndonesia = {
             type: 'FeatureCollection',
             features: worldGeojson.features.filter(f => 
@@ -677,14 +652,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             )
           };
           
-          // Add world country borders (except Indonesia) with very thin lines
           L.geoJSON(worldWithoutIndonesia, {
             pane: 'worldBorderPane',
             style: {
-              color: '#000000',      // Black color for borders
-              weight: 0.2,           // Very thin for global borders
-              opacity: 0.4,          // More transparent
-              fill: false            // No fill, just borders
+              color: '#000000',
+              weight: 0.2,
+              opacity: 0.4,
+              fill: false
             }
           }).addTo(map);
           
@@ -693,21 +667,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           console.error('Failed to load world borders:', worldError);
         }
         
-        // Then load ZOM (Zona Musim) GeoJSON for Indonesia (thicker, on top)
         const response = await fetch('/zom.geojson');
         const geojson = await response.json();
         
-        // Store GeoJSON for later use
         zomGeoJsonRef.current = geojson;
         
-        // Add ZOM boundaries with thicker styling (in higher z-index pane)
         L.geoJSON(geojson, {
           pane: 'indonesiaBorderPane',
           style: {
-            color: '#000000',      // Black color for borders
-            weight: 0.8,           // Thicker for Indonesia ZOM
-            opacity: 0.7,          // Less transparent than global
-            fill: false            // No fill, just borders
+            color: '#000000',
+            weight: 0.8,
+            opacity: 0.7,
+            fill: false
           }
         }).addTo(map);
         
@@ -719,7 +690,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           const fallbackResponse = await fetch('https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson');
           const worldGeojson = await fallbackResponse.json();
           
-          // Filter to only Indonesia
           const indonesiaOnly = {
             type: 'FeatureCollection',
             features: worldGeojson.features.filter(f => 
@@ -777,13 +747,11 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       [Math.min(bounds.maxLat, 5), Math.min(bounds.maxLon, 140)]    // Northeast
     );
     
-    // Update map maxBounds to match restricted area
     map.setMaxBounds(restrictedBounds);
     
-    // Fit the map view to show the precipitation layer, but respect minZoom
     map.fitBounds(restrictedBounds, { 
       padding: [20, 20],
-      maxZoom: 5.3  // Don't zoom out beyond this level
+      maxZoom: 5.3
     });
     
     console.log('Map centered on restricted bounds:', {
@@ -799,31 +767,26 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const L = require('leaflet');
     const map = mapInstanceRef.current;
     
-    // Remove existing ZOM layer if any
     if (zomLayerRef.current) {
       map.removeLayer(zomLayerRef.current);
       zomLayerRef.current = null;
     }
     
-    // Remove selected ZOM highlight
     if (selectedZomRef.current) {
       map.removeLayer(selectedZomRef.current);
       selectedZomRef.current = null;
     }
     
-    // Remove ocean layer
     if (oceanLayerRef.current) {
       map.removeLayer(oceanLayerRef.current);
       oceanLayerRef.current = null;
     }
     
-    // Remove colored ZOM layer
     if (coloredZomLayerRef.current) {
       map.removeLayer(coloredZomLayerRef.current);
       coloredZomLayerRef.current = null;
     }
     
-    // Only create clickable layer in region mode
     if (clickMode === 'region') {
       const geojson = zomGeoJsonRef.current;
       
@@ -871,7 +834,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           fillOpacity: 0.1
         },
         onEachFeature: (feature, layer) => {
-          // Get ZOM info from properties
           const props = feature.properties;
           const zomId = props.NOZOM_PROV || props.NOZONA_LAM || `ZOM ${props.NOZOM_NAS}`;
           const province = props.PROV || '';
@@ -879,11 +841,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           const climateType = props.TIPE_UMUM || '';
           const seasonType = props.TIPE_MUSIM || '';
           
-          // Create display name
           const zomName = `${zomId} (${province})`;
           const tooltipContent = `<b>${zomId}</b><br/>${province}, ${island}<br/>${climateType} - ${seasonType}`;
           
-          // Bind tooltip with ZOM info (shown on hover)
           layer.bindTooltip(tooltipContent, {
             permanent: false,
             direction: 'top',
@@ -891,7 +851,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             offset: [0, -10]
           });
           
-          // Hover effects
           layer.on('mouseover', function() {
             this.setStyle({
               fillOpacity: 0.3,
@@ -908,22 +867,18 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             this.closeTooltip();
           });
           
-          // Click handler for ZOM
           layer.on('click', async function(e) {
             L.DomEvent.stopPropagation(e);
             
-            // Remove old marker if exists
             if (markerRef.current) {
               map.removeLayer(markerRef.current);
               markerRef.current = null;
             }
             
-            // Remove old selected ZOM highlight
             if (selectedZomRef.current) {
               map.removeLayer(selectedZomRef.current);
             }
             
-            // Highlight selected ZOM
             selectedZomRef.current = L.geoJSON(feature, {
               style: {
                 color: '#ff7800',
@@ -934,10 +889,8 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               }
             }).addTo(map);
             
-            // Set loading state
             setSideWindow({ visible: true, data: null, loading: true });
             
-            // Fetch regional time series
             const mode = getApiMode();
             try {
               const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
@@ -1023,7 +976,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const map = mapInstanceRef.current;
 
     const handleClick = async (e) => {
-      // Only handle clicks in point mode
       if (clickMode !== 'point') return;
       
       const { lat, lng } = e.latlng;
@@ -1032,21 +984,17 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       // Auto-fill the coordinate search bar with the clicked coords
       setCoordSearch({ lat: lat.toFixed(4), lon: lng.toFixed(4) });
 
-      // Remove old marker if exists
       if (markerRef.current) {
         map.removeLayer(markerRef.current);
       }
       
-      // Remove selected ZOM highlight if any
       if (selectedZomRef.current) {
         map.removeLayer(selectedZomRef.current);
         selectedZomRef.current = null;
       }
 
-      // Set loading state for side window
       setSideWindow({ visible: true, data: null, loading: true });
 
-      // Fetch location name using reverse geocoding
       let locationName = 'Loading...';
       let locationDetails = { city: '', province: '', country: '' };
       
@@ -1067,7 +1015,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           locationDetails.province = addr.state || addr.province || '';
           locationDetails.country = addr.country || '';
           
-          // Build location name
           const parts = [locationDetails.city, locationDetails.province, locationDetails.country].filter(Boolean);
           locationName = parts.join(', ') || 'Unknown location';
         } else {
@@ -1078,7 +1025,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         locationName = 'Location unavailable';
       }
 
-      // Fetch time series data
       let timeSeriesData = null;
       const mode = getApiMode();
       try {
@@ -1092,11 +1038,9 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         console.error('Error fetching time series:', error);
       }
 
-      // Add marker
       const marker = L.marker([lat, lng]).addTo(map);
       markerRef.current = marker;
 
-      // Update side window with all data
       setSideWindow({
         visible: true,
         loading: false,
@@ -1163,9 +1107,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     map.getContainer().style.cursor = 'crosshair';
     
     const onMouseDown = (e) => {
-      // Remove previous box/mask
       cleanupBox();
-      // Close side window from previous box
       setSideWindow({ visible: false, data: null, loading: false });
       
       boxStartRef.current = e.latlng;
@@ -1198,7 +1140,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       
       const boxBounds = L.latLngBounds(start, end);
       
-      // Update the rectangle to final position
       if (boxRectRef.current) {
         boxRectRef.current.setBounds(boxBounds);
         boxRectRef.current.setStyle({ fillOpacity: 0.05, dashArray: null });
@@ -1222,7 +1163,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         L.rectangle([L.latLng(sw.lat, ne.lng), L.latLng(ne.lat, mapBounds.getEast())], maskStyle).addTo(map),
       ];
       
-      // Fetch time series for the box region
       setSideWindow({ visible: true, data: null, loading: true });
       
       const mode = getApiMode();
@@ -1508,12 +1448,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                             label: sideWindow.data.isRegion 
                               ? (dataRange === 'daily' ? 'Regional Avg Precipitation (mm/day)' : 'Regional Precipitation Sum (mm)')
                               : (dataRange === 'daily' ? 'Precipitation (mm/day)' : 'Precipitation Sum (mm)'),
-                            data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation),
+                            data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation ?? null),
                             borderColor: sideWindow.data.isRegion ? '#ff7800' : '#2196F3',
                             backgroundColor: sideWindow.data.isRegion ? 'rgba(255, 120, 0, 0.1)' : 'rgba(33, 150, 243, 0.1)',
                             borderWidth: 2,
                             fill: true,
                             tension: 0.4,
+                            spanGaps: true,
                             pointBackgroundColor: function(context) {
                               if (!context.parsed) return sideWindow.data.isRegion ? '#ff7800' : '#2196F3';
                               const value = context.parsed.y;
@@ -1546,13 +1487,14 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                             }
                           },
                           tooltip: {
-                            mode: 'index',
+                            mode: 'nearest',
                             intersect: false,
                             backgroundColor: 'rgba(0,0,0,0.8)',
                             titleColor: '#fff',
                             bodyColor: '#fff',
+                            enabled: sideWindow.data?.timeSeriesData?.time_series?.length > 0,
                             filter: function(tooltipItem) {
-                              return tooltipItem && tooltipItem.parsed && tooltipItem.parsed.y != null;
+                              return tooltipItem?.parsed?.y != null;
                             },
                             callbacks: {
                               label: function(context) {
@@ -1931,12 +1873,13 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                       label: sideWindow.data.isRegion 
                         ? (dataRange === 'daily' ? 'Regional Avg Precipitation (mm/day)' : 'Regional Precipitation Sum (mm)')
                         : (dataRange === 'daily' ? 'Precipitation (mm/day)' : 'Precipitation Sum (mm)'),
-                      data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation),
+                      data: sideWindow.data.timeSeriesData.time_series.map(item => item.precipitation ?? null),
                       borderColor: sideWindow.data.isRegion ? '#ff7800' : '#2196F3',
                       backgroundColor: sideWindow.data.isRegion ? 'rgba(255, 120, 0, 0.15)' : 'rgba(33, 150, 243, 0.15)',
                       borderWidth: 2.5,
                       fill: true,
                       tension: 0.3,
+                      spanGaps: true,
                       pointBackgroundColor: sideWindow.data.isRegion ? '#ff7800' : '#2196F3',
                       pointBorderColor: '#fff',
                       pointBorderWidth: 2,
@@ -1957,14 +1900,15 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                       }
                     },
                     tooltip: {
-                      mode: 'index',
+                      mode: 'nearest',
                       intersect: false,
                       backgroundColor: 'rgba(0,0,0,0.85)',
                       titleFont: { size: 14 },
                       bodyFont: { size: 13 },
                       padding: 12,
+                      enabled: sideWindow.data?.timeSeriesData?.time_series?.length > 0,
                       filter: function(tooltipItem) {
-                        return tooltipItem && tooltipItem.parsed && tooltipItem.parsed.y != null;
+                        return tooltipItem?.parsed?.y != null;
                       },
                       callbacks: {
                         title: function(items) {
