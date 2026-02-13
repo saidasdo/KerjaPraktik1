@@ -23,7 +23,7 @@ ChartJS.register(
   Legend
 );
 
-function ColorLegend({ stats }) {
+function ColorLegend({ stats, dataRange = 'monthly' }) {
   const [isMobile, setIsMobile] = useState(false);
   
   useEffect(() => {
@@ -33,7 +33,31 @@ function ColorLegend({ stats }) {
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
   
-  const colorStops = [
+  const colorStopsDaily = [
+    { range: '>100', color: '#00460C' },
+    { range: '40-100', color: '#369135' },
+    { range: '20-40', color: '#8AD58B' },
+    { range: '15-20', color: '#E0FD68' },
+    { range: '10-15', color: '#EBE100' },
+    { range: '5-10', color: '#EFA700' },
+    { range: '1-5', color: '#DC6200' },
+    { range: '0.5-1', color: '#8E2800' },
+    { range: '0-0.5', color: '#340A00' }
+  ];
+  
+  const colorStops10day = [
+    { range: '>300', color: '#00460C' },
+    { range: '200-300', color: '#369135' },
+    { range: '100-200', color: '#8AD58B' },
+    { range: '50-100', color: '#E0FD68' },
+    { range: '30-50', color: '#EBE100' },
+    { range: '25-30', color: '#EFA700' },
+    { range: '20-25', color: '#DC6200' },
+    { range: '10-20', color: '#8E2800' },
+    { range: '0-10', color: '#340A00' }
+  ];
+  
+  const colorStopsMonthly = [
     { range: '>500', color: '#00460C' },
     { range: '400-500', color: '#369135' },
     { range: '300-400', color: '#8AD58B' },
@@ -44,6 +68,10 @@ function ColorLegend({ stats }) {
     { range: '20-50', color: '#8E2800' },
     { range: '0-20', color: '#340A00' }
   ];
+  
+  const colorStops = dataRange === 'daily' ? colorStopsDaily 
+    : dataRange === '10day' ? colorStops10day 
+    : colorStopsMonthly;
   
   if (isMobile) {
     return (
@@ -151,16 +179,38 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
 
   // Get color for precipitation value (matches the color legend)
   const getPrecipitationColor = (value) => {
-    if (value === null || value === undefined) return '#cccccc';  // Gray for no data
-    if (value > 500) return '#00460C';
-    if (value > 400) return '#369135';
-    if (value > 300) return '#8AD58B';
-    if (value > 200) return '#E0FD68';
-    if (value > 150) return '#EBE100';
-    if (value > 100) return '#EFA700';
-    if (value > 50) return '#DC6200';
-    if (value > 20) return '#8E2800';
-    return '#340A00';
+    if (value === null || value === undefined) return '#cccccc';
+    if (dataRange === 'daily') {
+      if (value > 100) return '#00460C';
+      if (value > 40) return '#369135';
+      if (value > 20) return '#8AD58B';
+      if (value > 15) return '#E0FD68';
+      if (value > 10) return '#EBE100';
+      if (value > 5) return '#EFA700';
+      if (value > 1) return '#DC6200';
+      if (value > 0.5) return '#8E2800';
+      return '#340A00';
+    } else if (dataRange === '10day') {
+      if (value > 300) return '#00460C';
+      if (value > 200) return '#369135';
+      if (value > 100) return '#8AD58B';
+      if (value > 50) return '#E0FD68';
+      if (value > 30) return '#EBE100';
+      if (value > 25) return '#EFA700';
+      if (value > 20) return '#DC6200';
+      if (value > 10) return '#8E2800';
+      return '#340A00';
+    } else {
+      if (value > 500) return '#00460C';
+      if (value > 400) return '#369135';
+      if (value > 300) return '#8AD58B';
+      if (value > 200) return '#E0FD68';
+      if (value > 150) return '#EBE100';
+      if (value > 100) return '#EFA700';
+      if (value > 50) return '#DC6200';
+      if (value > 20) return '#8E2800';
+      return '#340A00';
+    }
   };
 
   const calculatePolygonAverage = (geometry) => {
@@ -1779,6 +1829,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                   map={mapInstanceRef.current} 
                   data={precipData}
                   opacity={0.8}
+                  dataRange={dataRange}
                 />
               )}
               {/* Toggle button for UI controls */}
@@ -1806,7 +1857,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
               </button>
               {showControls && (
                 <>
-                  {!isMobile && <ColorLegend stats={precipData.stats} />}
+                  {!isMobile && <ColorLegend stats={precipData.stats} dataRange={dataRange} />}
                   <ModeToggle />
                   {coordSearchBar}
                 </>
@@ -1821,7 +1872,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       
       {/* Mobile: legend below map */}
       {isMobile && mapReady && precipData && showControls && (
-        <ColorLegend stats={precipData.stats} />
+        <ColorLegend stats={precipData.stats} dataRange={dataRange} />
       )}
       
       {/* Time Series Popup Modal */}

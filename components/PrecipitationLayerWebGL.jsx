@@ -19,52 +19,69 @@ const FRAGMENT_SHADER = `
   uniform sampler2D u_data;
   uniform vec2 u_dataSize;
   uniform float u_opacity;
-  uniform float u_maxPrecip; 
+  uniform float u_maxPrecip;
+  uniform float u_mode; // 0.0 = daily, 1.0 = 10day, 2.0 = monthly
   
-  // Fixed color bands matching legend thresholds (mm)
-  // Scale: t * 600.0 = precipitation in mm
-  vec3 colormap(float t) {
-    t = clamp(t, 0.0, 1.0);
-    
-    // Reconstruct actual precipitation value (mm)
-    float precip = t * 600.0;
-    
-    // Fixed mm thresholds matching the legend exactly
-    if (precip > 500.0) {
-      return vec3(0.0, 0.275, 0.047);     // #00460C  >500mm
-    } else if (precip > 400.0) {
-      return vec3(0.212, 0.569, 0.208);   // #369135  400-500mm
-    } else if (precip > 300.0) {
-      return vec3(0.541, 0.835, 0.545);   // #8AD58B  300-400mm
-    } else if (precip > 200.0) {
-      return vec3(0.878, 0.992, 0.408);   // #E0FD68  200-300mm
-    } else if (precip > 150.0) {
-      return vec3(0.922, 0.882, 0.0);     // #EBE100  150-200mm
-    } else if (precip > 100.0) {
-      return vec3(0.937, 0.655, 0.0);     // #EFA700  100-150mm
-    } else if (precip > 50.0) {
-      return vec3(0.863, 0.384, 0.0);     // #DC6200  50-100mm
-    } else if (precip > 20.0) {
-      return vec3(0.557, 0.157, 0.0);     // #8E2800  20-50mm
-    } else {
-      return vec3(0.204, 0.039, 0.0);     // #340A00  0-20mm
-    }
+  vec3 colormapDaily(float precip) {
+    if (precip > 100.0) return vec3(0.0, 0.275, 0.047);       // #00460C  >100mm
+    else if (precip > 40.0) return vec3(0.212, 0.569, 0.208);  // #369135  40-100mm
+    else if (precip > 20.0) return vec3(0.541, 0.835, 0.545);  // #8AD58B  20-40mm
+    else if (precip > 15.0) return vec3(0.878, 0.992, 0.408);  // #E0FD68  15-20mm
+    else if (precip > 10.0) return vec3(0.922, 0.882, 0.0);    // #EBE100  10-15mm
+    else if (precip > 5.0) return vec3(0.937, 0.655, 0.0);     // #EFA700  5-10mm
+    else if (precip > 1.0) return vec3(0.863, 0.384, 0.0);     // #DC6200  1-5mm
+    else if (precip > 0.5) return vec3(0.557, 0.157, 0.0);     // #8E2800  0.5-1mm
+    else return vec3(0.204, 0.039, 0.0);                        // #340A00  0-0.5mm
+  }
+  
+  vec3 colormap10day(float precip) {
+    if (precip > 300.0) return vec3(0.0, 0.275, 0.047);        // #00460C  >300mm
+    else if (precip > 200.0) return vec3(0.212, 0.569, 0.208); // #369135  200-300mm
+    else if (precip > 100.0) return vec3(0.541, 0.835, 0.545); // #8AD58B  100-200mm
+    else if (precip > 50.0) return vec3(0.878, 0.992, 0.408);  // #E0FD68  50-100mm
+    else if (precip > 30.0) return vec3(0.922, 0.882, 0.0);    // #EBE100  30-50mm
+    else if (precip > 25.0) return vec3(0.937, 0.655, 0.0);    // #EFA700  25-30mm
+    else if (precip > 20.0) return vec3(0.863, 0.384, 0.0);    // #DC6200  20-25mm
+    else if (precip > 10.0) return vec3(0.557, 0.157, 0.0);    // #8E2800  10-20mm
+    else return vec3(0.204, 0.039, 0.0);                        // #340A00  0-10mm
+  }
+  
+  vec3 colormapMonthly(float precip) {
+    if (precip > 500.0) return vec3(0.0, 0.275, 0.047);        // #00460C  >500mm
+    else if (precip > 400.0) return vec3(0.212, 0.569, 0.208); // #369135  400-500mm
+    else if (precip > 300.0) return vec3(0.541, 0.835, 0.545); // #8AD58B  300-400mm
+    else if (precip > 200.0) return vec3(0.878, 0.992, 0.408); // #E0FD68  200-300mm
+    else if (precip > 150.0) return vec3(0.922, 0.882, 0.0);   // #EBE100  150-200mm
+    else if (precip > 100.0) return vec3(0.937, 0.655, 0.0);   // #EFA700  100-150mm
+    else if (precip > 50.0) return vec3(0.863, 0.384, 0.0);    // #DC6200  50-100mm
+    else if (precip > 20.0) return vec3(0.557, 0.157, 0.0);    // #8E2800  20-50mm
+    else return vec3(0.204, 0.039, 0.0);                        // #340A00  0-20mm
   }
   
   void main() {
-    // Simple texture lookup with linear filtering
     vec4 texel = texture2D(u_data, v_texCoord);
     
-    float value = texel.r;  // Value is in R channel (0-1 range, was 0-255 stored)
-    float alpha = texel.a;  // Alpha indicates validity
+    float value = texel.r;
+    float alpha = texel.a;
     
-    // Discard invalid pixels
     if (alpha < 0.5) {
       discard;
     }
     
-    // Apply colormap directly - value is already normalized 0-1
-    vec3 color = colormap(value);
+    // Undo log1p encoding applied during texture packing
+    // encode: log(1 + x*10) / log(11), decode: (exp(y * log(11)) - 1) / 10
+    float y = clamp(value, 0.0, 1.0);
+    float linear = (exp(y * 2.3979) - 1.0) / 10.0;
+    float precip = linear * u_maxPrecip;
+    
+    vec3 color;
+    if (u_mode < 0.5) {
+      color = colormapDaily(precip);
+    } else if (u_mode < 1.5) {
+      color = colormap10day(precip);
+    } else {
+      color = colormapMonthly(precip);
+    }
     
     gl_FragColor = vec4(color, u_opacity);
   }
@@ -97,7 +114,7 @@ function createProgram(gl, vertexShader, fragmentShader) {
   return program;
 }
 
-export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100, opacity = 0.8) {
+export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100, opacity = 0.8, dataRange = 'monthly') {
   const { lat, lon, values } = data;
   
   const gl = canvas.getContext('webgl', { 
@@ -183,9 +200,9 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
     scaleMin: minVal, scaleMax: maxVal 
   });
   
-  // Fixed scale: 0-600mm mapped linearly to 0-255
-  // This ensures colors match the legend thresholds exactly
-  const FIXED_MAX_PRECIP = 600.0;
+  // Fixed scale based on data range
+  const FIXED_MAX_PRECIP = dataRange === 'daily' ? 150.0 : dataRange === '10day' ? 400.0 : 800.0;
+  const modeValue = dataRange === 'daily' ? 0.0 : dataRange === '10day' ? 1.0 : 2.0;
   
   // Pack data into RGBA texture using fixed linear scale
   const textureData = new Uint8Array(width * height * 4);
@@ -200,9 +217,10 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
       const texIdx = (i * width + j) * 4;
       
       if (value !== -999 && value >= 0) {
-        // Linear normalization to fixed 0-600mm scale (no gamma)
+        // Log1p encoding for better precision at both low and high values
         const normalized01 = Math.min(1, value / FIXED_MAX_PRECIP);
-        const normalizedValue = Math.round(normalized01 * 255);
+        const logEncoded = Math.log1p(normalized01 * 10) / Math.log(11);
+        const normalizedValue = Math.round(logEncoded * 255);
         
         textureData[texIdx] = normalizedValue;     // R: normalized value (0-255)
         textureData[texIdx + 1] = 0;               // G: unused
@@ -244,6 +262,7 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   gl.uniform2f(gl.getUniformLocation(program, 'u_dataSize'), width, height);
   gl.uniform1f(gl.getUniformLocation(program, 'u_opacity'), opacity);
   gl.uniform1f(gl.getUniformLocation(program, 'u_maxPrecip'), FIXED_MAX_PRECIP);
+  gl.uniform1f(gl.getUniformLocation(program, 'u_mode'), modeValue);
   
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.clearColor(0, 0, 0, 0);
@@ -263,7 +282,7 @@ export function renderPrecipitationWebGL(canvas, data, minVal = 0, maxVal = 100,
   return canvas;
 }
 
-export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
+export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7, dataRange = 'monthly' }) {
   const layerRef = useRef(null);
 
   useEffect(() => {
@@ -288,7 +307,7 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
     
     const minVal = (stats && stats.min != null) ? stats.min : 0;
     const maxVal = (stats && stats.max != null) ? stats.max : 100;
-    renderPrecipitationWebGL(canvas, data, minVal, maxVal, opacity);
+    renderPrecipitationWebGL(canvas, data, minVal, maxVal, opacity, dataRange);
     
     console.log(`WebGL render time: ${(performance.now() - startTime).toFixed(2)}ms`);
     
@@ -330,7 +349,7 @@ export default function PrecipitationLayerWebGL({ map, data, opacity = 0.7 }) {
         layerRef.current = null;
       }
     };
-  }, [map, data, opacity]);
+  }, [map, data, opacity, dataRange]);
 
   return null;
 }
