@@ -359,7 +359,7 @@ const fetchAggregatedPrecipData = async (periodParam, startTime, endTime, subsam
 
 export default function Home() {
   const [precipData, setPrecipData] = useState(null);
-  const [period, setPeriod] = useState('202601');
+  const [period, setPeriod] = useState('');
   const [timeIndex, setTimeIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [availableTimes, setAvailableTimes] = useState([]);
@@ -451,7 +451,13 @@ export default function Home() {
   useEffect(() => {
     fetch('http://172.19.1.191:5000/api/periods')
       .then(res => res.json())
-      .then(data => setAvailablePeriods(data.periods))
+      .then(data => {
+        const sorted = [...data.periods].sort((a, b) => b.localeCompare(a));
+        setAvailablePeriods(sorted);
+        if (sorted.length > 0 && !period) {
+          setPeriod(sorted[0]);
+        }
+      })
       .catch(err => console.error('Error fetching periods:', err));
   }, []);
 

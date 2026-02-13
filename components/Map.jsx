@@ -132,6 +132,8 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
   
   const [coordSearch, setCoordSearch] = useState({ lat: '', lon: '' });
   const [coordError, setCoordError] = useState('');
+  const boundsSetRef = useRef(false);
+  const [showControls, setShowControls] = useState(true);
   
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -734,7 +736,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     };
   }, []);
 
-  // Center map on precipitation data bounds when data loads
+  // Center map on precipitation data bounds on first load only
   useEffect(() => {
     if (!mapInstanceRef.current || !precipData || !precipData.bounds) return;
     
@@ -742,23 +744,24 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const map = mapInstanceRef.current;
     const bounds = precipData.bounds;
     
-    // Create tighter bounds (crop edges by 1 degree)
     const restrictedBounds = L.latLngBounds(
-      [Math.max(bounds.minLat, -10), Math.max(bounds.minLon, 96)],  // Southwest
-      [Math.min(bounds.maxLat, 5), Math.min(bounds.maxLon, 140)]    // Northeast
+      [Math.max(bounds.minLat, -10), Math.max(bounds.minLon, 96)],
+      [Math.min(bounds.maxLat, 5), Math.min(bounds.maxLon, 140)]
     );
     
     map.setMaxBounds(restrictedBounds);
     
-    map.fitBounds(restrictedBounds, { 
-      padding: [20, 20],
-      maxZoom: 5.3
-    });
-    
-    console.log('Map centered on restricted bounds:', {
-      original: bounds,
-      restricted: restrictedBounds.toBBoxString()
-    });
+    if (!boundsSetRef.current) {
+      map.fitBounds(restrictedBounds, { 
+        padding: [20, 20],
+        maxZoom: 5.3
+      });
+      boundsSetRef.current = true;
+      console.log('Map centered on restricted bounds:', {
+        original: bounds,
+        restricted: restrictedBounds.toBBoxString()
+      });
+    }
   }, [precipData]);
 
   // Create/update clickable ZOM layer when mode changes
@@ -1771,7 +1774,6 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
           />
           {mapReady && precipData && (
             <>
-              {/* Hide WebGL overlay in ZOM mode - replaced by colored ZOM polygons */}
               {clickMode !== 'region' && (
                 <PrecipitationLayerWebGL 
                   map={mapInstanceRef.current} 
@@ -1779,10 +1781,36 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
                   opacity={0.8}
                 />
               )}
-              {/* Desktop: legend inside map */}
-              {!isMobile && <ColorLegend stats={precipData.stats} />}
-              <ModeToggle />
-              {coordSearchBar}
+              {/* Toggle button for UI controls */}
+              <button
+                onClick={() => setShowControls(prev => !prev)}
+                style={{
+                  position: 'absolute',
+                  top: '80px',
+                  left: '10px',
+                  zIndex: 1001,
+                  background: showControls ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.8)',
+                  border: showControls ? '2px solid #2196F3' : '2px solid #aaa',
+                  borderRadius: '8px',
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                  fontSize: '13px',
+                  fontWeight: 'bold',
+                  color: showControls ? '#2196F3' : '#666',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.2)',
+                  transition: 'all 0.2s'
+                }}
+                title={showControls ? 'Hide controls' : 'Show controls'}
+              >
+                {showControls ? 'Hide UI' : 'Show UI'}
+              </button>
+              {showControls && (
+                <>
+                  {!isMobile && <ColorLegend stats={precipData.stats} />}
+                  <ModeToggle />
+                  {coordSearchBar}
+                </>
+              )}
             </>
           )}
         </div>
@@ -1792,7 +1820,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       </div>
       
       {/* Mobile: legend below map */}
-      {isMobile && mapReady && precipData && (
+      {isMobile && mapReady && precipData && showControls && (
         <ColorLegend stats={precipData.stats} />
       )}
       
