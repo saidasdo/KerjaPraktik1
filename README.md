@@ -72,6 +72,4 @@ Make sure these dependencies are specified in your `package.json`.
 
 ---
 
-## License
-
-[Specify your license here.]
+saidasdop@gmail.com
