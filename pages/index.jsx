@@ -608,7 +608,7 @@ export default function Home() {
       maxLon: dataLonMax + lonStep / 2
     };
     
-    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 1);
+    renderPrecipitationWebGL(dataCanvas, data, stats.min, stats.max, 1, dataRange);
     
     const mapTopLeft = geoToCanvas(dataBounds.maxLat, dataBounds.minLon);
     const mapBottomRight = geoToCanvas(dataBounds.minLat, dataBounds.maxLon);
@@ -749,7 +749,8 @@ export default function Home() {
     
     // Forecast = the time the user currently selected
     // Try to get from the selected time option label
-    let forecastLabel = `${initialMonth} ${periodYear}`; // fallback    const currentOption = filteredTimeOptions[selectedTimeOption];
+    let forecastLabel = `${initialMonth} ${periodYear}`;
+    const currentOption = filteredTimeOptions[selectedTimeOption];
     if (currentOption && currentOption.label) {
       forecastLabel = currentOption.label;
     } else if (dataRange === 'daily' && availableTimes[selectedTimeOption]) {

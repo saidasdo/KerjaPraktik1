@@ -1,7 +1,7 @@
 {
-  "name": "ncics-tropical-monitoring",
+  "name": "inarcm2",
   "version": "1.0.0",
-  "description": "NCICS Tropical Monitoring Interface",
+  "description": "Precipitation Visualization",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
