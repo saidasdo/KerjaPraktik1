@@ -342,7 +342,7 @@ const parseBinaryPrecipData = (buffer) => {
 // Using subsample=1 for full quality
 const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 1) => {
   const response = await fetch(
-    `http://172.19.1.191:5000/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=${subsample}`
+    `http://172.19.1.191:5001/api/precipitation/binary?period=${periodParam}&time=${timeParam}&subsample=${subsample}`
   );
   const buffer = await response.arrayBuffer();
   return parseBinaryPrecipData(buffer);
@@ -351,7 +351,7 @@ const fetchBinaryPrecipData = async (periodParam, timeParam, subsample = 1) => {
 // Fetch aggregated binary data (for 10-day and monthly views)
 const fetchAggregatedPrecipData = async (periodParam, startTime, endTime, subsample = 1) => {
   const response = await fetch(
-    `http://172.19.1.191:5000/api/precipitation/aggregated/binary?period=${periodParam}&start_time=${startTime}&end_time=${endTime}&subsample=${subsample}`
+    `http://172.19.1.191:5001/api/precipitation/aggregated/binary?period=${periodParam}&start_time=${startTime}&end_time=${endTime}&subsample=${subsample}`
   );
   const buffer = await response.arrayBuffer();
   return parseBinaryPrecipData(buffer);
@@ -407,7 +407,7 @@ export default function Home() {
     
     console.log(`Starting prefetch for ${targetPeriod}...`);
     
-    fetch(`http://172.19.1.191:5000/api/prefetch?period=${targetPeriod}&subsample=1`, {
+    fetch(`http://172.19.1.191:5001/api/prefetch?period=${targetPeriod}&subsample=1`, {
       signal: abortController.signal
     })
       .then(res => res.json())
@@ -449,7 +449,7 @@ export default function Home() {
 
   // Fetch available periods on mount
   useEffect(() => {
-    fetch('http://172.19.1.191:5000/api/periods')
+    fetch('http://172.19.1.191:5001/api/periods')
       .then(res => res.json())
       .then(data => {
         const sorted = [...data.periods].sort((a, b) => b.localeCompare(a));
@@ -469,7 +469,7 @@ export default function Home() {
       prefetchAbortRef.current.abort();
     }
     
-    fetch(`http://172.19.1.191:5000/api/times?period=${period}`)
+    fetch(`http://172.19.1.191:5001/api/times?period=${period}`)
       .then(res => res.json())
       .then(data => {
         setAvailableTimes(data.times || []);

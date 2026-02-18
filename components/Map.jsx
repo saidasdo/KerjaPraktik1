@@ -338,7 +338,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const mode = getApiMode();
     try {
       const timeSeriesResponse = await fetch(
-        `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
+        `http://172.19.1.191:5001/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
       );
       if (timeSeriesResponse.ok) {
         const timeSeriesData = await timeSeriesResponse.json();
@@ -456,7 +456,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     const mode = getApiMode();
     try {
       const timeSeriesResponse = await fetch(
-        `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+        `http://172.19.1.191:5001/api/timeseries?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
       );
       if (timeSeriesResponse.ok) {
         const timeSeriesData = await timeSeriesResponse.json();
@@ -478,7 +478,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
     try {
       if (sideWindow.data.isRegion) {
         // Region CSV download
-        const response = await fetch('http://172.19.1.191:5000/api/timeseries/region/csv', {
+        const response = await fetch('http://172.19.1.191:5001/api/timeseries/region/csv', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -508,7 +508,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
         const lon = sideWindow.data.lng;
         
         const response = await fetch(
-          `http://172.19.1.191:5000/api/timeseries/csv?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
+          `http://172.19.1.191:5001/api/timeseries/csv?lat=${lat}&lon=${lon}&period=${period}&mode=${mode}`
         );
         
         if (response.ok) {
@@ -552,7 +552,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       
       if (sideWindow.data.isRegion && sideWindow.data.geometry) {
         try {
-          const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
+          const response = await fetch('http://172.19.1.191:5001/api/timeseries/region', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -585,7 +585,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       } else if (sideWindow.data.lat && sideWindow.data.lng) {
         try {
           const timeSeriesResponse = await fetch(
-            `http://172.19.1.191:5000/api/timeseries?lat=${sideWindow.data.lat}&lon=${sideWindow.data.lng}&period=${period}&mode=${mode}`
+            `http://172.19.1.191:5001/api/timeseries?lat=${sideWindow.data.lat}&lon=${sideWindow.data.lng}&period=${period}&mode=${mode}`
           );
           if (timeSeriesResponse.ok) {
             const timeSeriesData = await timeSeriesResponse.json();
@@ -964,7 +964,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
             
             const mode = getApiMode();
             try {
-              const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
+              const response = await fetch('http://172.19.1.191:5001/api/timeseries/region', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1111,7 +1111,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       const mode = getApiMode();
       try {
         const timeSeriesResponse = await fetch(
-          `http://172.19.1.191:5000/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
+          `http://172.19.1.191:5001/api/timeseries?lat=${lat}&lon=${lng}&period=${period}&mode=${mode}`
         );
         if (timeSeriesResponse.ok) {
           const timeSeriesData = await timeSeriesResponse.json();
@@ -1257,7 +1257,7 @@ export default function Map({ precipData, period = '202601', dataRange = 'daily'
       });
       
       try {
-        const response = await fetch('http://172.19.1.191:5000/api/timeseries/region', {
+        const response = await fetch('http://172.19.1.191:5001/api/timeseries/region', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
