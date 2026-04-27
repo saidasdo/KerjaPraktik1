@@ -10,6 +10,7 @@ from shapely.prepared import prep
 from io import StringIO
 import csv
 from datetime import datetime, timedelta
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -1632,4 +1633,6 @@ def get_region_precipitation():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True, port=5001)
+    port = int(os.environ.get('PORT', 5001))
+    debug = os.environ.get('FLASK_DEBUG', '0') == '1'
+    app.run(host='0.0.0.0', debug=debug, port=port)
