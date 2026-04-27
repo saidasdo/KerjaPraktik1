@@ -104,3 +104,17 @@ jobs:
         with:
           name: local-dev-bundle
           path: local-dev-bundle.tar.gz
+
+  deploy_vercel:
+    name: Deploy Frontend to Vercel
+    runs-on: ubuntu-latest
+    needs:
+      - frontend_ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/local-dev' && secrets.VERCEL_DEPLOY_HOOK_LOCAL_DEV != ''
+
+    steps:
+      - name: Trigger Vercel deploy hook
+        run: |
+          curl -X POST "$VERCEL_DEPLOY_HOOK_LOCAL_DEV"
+        env:
+          VERCEL_DEPLOY_HOOK_LOCAL_DEV: ${{ secrets.VERCEL_DEPLOY_HOOK_LOCAL_DEV }}
